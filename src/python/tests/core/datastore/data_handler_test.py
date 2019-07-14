@@ -13,16 +13,17 @@
 # limitations under the License.
 """Tests for data_handler."""
 
+import datetime
 import json
+import mock
 import os
 import unittest
 
-import mock
 from pyfakefs import fake_filesystem_unittest
 
+from config import local_config
 from datastore import data_handler
 from datastore import data_types
-from issue_management import issue
 from system import environment
 from tests.test_libs import helpers
 from tests.test_libs import test_utils
@@ -68,9 +69,11 @@ class DataHandlerTest(unittest.TestCase):
 
   def setUp(self):
     helpers.patch_environ(self)
+    project_config_get = local_config.ProjectConfig.get
     helpers.patch(self, [
         'base.utils.default_project_name',
         'config.db_config.get',
+        ('project_config_get', 'config.local_config.ProjectConfig.get'),
     ])
 
     self.job = data_types.Job(
@@ -108,6 +111,13 @@ class DataHandlerTest(unittest.TestCase):
         crash_address='0x1337',
         crash_state='NULL')
 
+    self.testcase_empty = data_types.Testcase(
+        job_type='linux_asan_chrome',
+        fuzzer_name='libfuzzer_binary_name',
+        crash_type='',
+        crash_address='',
+        crash_state='')
+
     self.testcase_bad_cast = data_types.Testcase(
         job_type='linux_asan_chrome',
         fuzzer_name='libfuzzer_binary_name',
@@ -142,9 +152,10 @@ class DataHandlerTest(unittest.TestCase):
 
     entities_to_put = [
         self.testcase, self.testcase_assert, self.testcase_null,
-        self.testcase_bad_cast, self.testcase_bad_cast_without_crash_function,
-        self.job, self.job2, self.local_data_bundle, self.cloud_data_bundle,
-        self.fuzzer1, self.fuzzer2, self.fuzzer3
+        self.testcase_empty, self.testcase_bad_cast,
+        self.testcase_bad_cast_without_crash_function, self.job, self.job2,
+        self.local_data_bundle, self.cloud_data_bundle, self.fuzzer1,
+        self.fuzzer2, self.fuzzer3
     ]
     for entity in entities_to_put:
       entity.put()
@@ -152,6 +163,7 @@ class DataHandlerTest(unittest.TestCase):
     environment.set_value('FUZZ_DATA', '/tmp/inputs/fuzzer-common-data-bundles')
     environment.set_value('FUZZERS_DIR', '/tmp/inputs/fuzzers')
     self.mock.default_project_name.return_value = 'project'
+    self.mock.project_config_get.side_effect = project_config_get
 
   def test_find_testcase(self):
     """Ensure that find_testcase behaves as expected."""
@@ -303,19 +315,29 @@ class DataHandlerTest(unittest.TestCase):
         'https://test-clusterfuzz.appspot.com/download?testcase_id=1\n\n'
         'See help_url for instructions to reproduce this bug locally.')
 
-  def test_get_issue_summary_no_project(self):
-    """Test get_issue_description on jobs with no project."""
+  def test_get_issue_summary_with_no_prefix(self):
+    """Test get_issue_description on jobs with no prefix."""
+    self.job.environment_string = 'HELP_URL = help_url\n'
+    self.job.put()
+    summary = data_handler.get_issue_summary(self.testcase_assert)
+    self.assertEqual(summary, 'binary_name: ASSERT: foo != bar')
+
+    summary = data_handler.get_issue_summary(self.testcase)
+    self.assertEqual(summary, 'binary_name: Crash-type in A')
+
+  def test_get_issue_summary_with_non_project_prefix(self):
+    """Test get_issue_description on jobs with prefix not equal to project."""
     self.job.environment_string = ('SUMMARY_PREFIX = prefix\n'
                                    'HELP_URL = help_url\n')
     self.job.put()
     summary = data_handler.get_issue_summary(self.testcase_assert)
-    self.assertEqual(summary, 'prefix: ASSERT: foo != bar')
+    self.assertEqual(summary, 'prefix/binary_name: ASSERT: foo != bar')
 
     summary = data_handler.get_issue_summary(self.testcase)
-    self.assertEqual(summary, 'prefix: Crash-type in A')
+    self.assertEqual(summary, 'prefix/binary_name: Crash-type in A')
 
-  def test_get_issue_summary(self):
-    """Test get_issue_description."""
+  def test_get_issue_summary_with_project_prefix(self):
+    """Test get_issue_description with project name as prefix."""
     summary = data_handler.get_issue_summary(self.testcase_assert)
     self.assertEqual(summary, 'project/binary_name: ASSERT: foo != bar')
 
@@ -325,7 +347,12 @@ class DataHandlerTest(unittest.TestCase):
   def test_get_issue_summary_null(self):
     """Test get_issue_summary for null crash state."""
     summary = data_handler.get_issue_summary(self.testcase_null)
-    self.assertEqual(summary, 'project: NULL')
+    self.assertEqual(summary, 'project: Crash with empty stacktrace')
+
+  def test_get_issue_summary_empty(self):
+    """Test get_issue_summary for empty crash state and empty crash type."""
+    summary = data_handler.get_issue_summary(self.testcase_empty)
+    self.assertEqual(summary, 'project: Unknown error with empty stacktrace')
 
   def test_get_issue_summary_bad_cast(self):
     """Test get_issue_summary for bad cast."""
@@ -342,6 +369,18 @@ class DataHandlerTest(unittest.TestCase):
     self.assertEqual(
         summary, 'project: Bad-cast to blink::LayoutBlock from '
         'blink::LayoutTableSection')
+
+  def test_get_data_bundle_name_default(self):
+    """Test getting the default data bundle bucket name."""
+    self.assertEqual('test-corpus.test-clusterfuzz.appspot.com',
+                     data_handler.get_data_bundle_bucket_name('test'))
+
+  def test_get_data_bundle_name_custom_suffix(self):
+    """Test getting the data bundle bucket name with custom suffix."""
+    self.mock.project_config_get.side_effect = None
+    self.mock.project_config_get.return_value = 'custom.suffix.com'
+    self.assertEqual('test-corpus.custom.suffix.com',
+                     data_handler.get_data_bundle_bucket_name('test'))
 
 
 @test_utils.with_cloud_emulators('datastore')
@@ -451,105 +490,58 @@ class GetSecuritySeverityTest(unittest.TestCase):
                                                        False)
 
 
-@test_utils.with_cloud_emulators('datastore')
-class UpdateImpactTest(unittest.TestCase):
-  """Update impact tests."""
-
-  def _make_mock_issue(self):
-    mock_issue = mock.Mock(autospec=issue.Issue)
-    mock_issue.labels = []
-
-    return mock_issue
+class UpdateTestcaseCommentTest(unittest.TestCase):
+  """Update testcase comment tests."""
 
   def setUp(self):
     helpers.patch_environ(self)
-    self.testcase = data_types.Testcase()
-    self.testcase.one_time_crasher_flag = False
+    helpers.patch(self, [
+        'base.utils.current_date_time',
+    ])
 
-  def test_update_impact_stable_from_regression(self):
-    """Tests updating impact to Stable from the regression range."""
-    self.testcase.regression = '0:1000'
-    mock_issue = self._make_mock_issue()
+    os.environ['BOT_NAME'] = 'bot'
+    os.environ['TASK_NAME'] = 'progression'
+    self.testcase = mock.Mock()
+    self.testcase.comments = ''
+    self.mock.current_date_time.return_value = datetime.datetime(2019, 1, 1)
 
-    data_handler.update_issue_impact_labels(self.testcase, mock_issue)
-    mock_issue.add_label.assert_called_with('Security_Impact-Stable')
-    mock_issue.remove_label.assert_not_called()
+  def test_update_comment_empty(self):
+    """Basic test on a testcase with empty comments."""
+    data_handler.update_testcase_comment(
+        self.testcase, data_types.TaskState.STARTED, 'message')
+    self.assertEqual(
+        '[2019-01-01 00:00:00] bot: Progression task started: message.\n',
+        self.testcase.comments)
 
-  def test_update_impact_stable(self):
-    """Tests updating impact to Stable."""
-    self.testcase.is_impact_set_flag = True
-    self.testcase.impact_stable_version = 'Stable'
+  def test_update_comment_clear(self):
+    """Basic test on a testcase with existing comments, and clearing old
+    progression messages."""
+    self.testcase.comments = (
+        '[2018-01-01 00:00:00] bot: Foo.\n'
+        '[2018-01-01 00:00:00] bot: Progression task started: message.\n'
+        '[2018-01-01 00:00:00] bot: Bar.\n'
+        '[2018-01-01 00:00:00] bot: Progression task finished.\n'
+        '[2018-01-01 00:00:00] bot: Blah.\n')
+    data_handler.update_testcase_comment(
+        self.testcase, data_types.TaskState.STARTED, 'message')
+    self.assertEqual(
+        ('[2018-01-01 00:00:00] bot: Foo.\n'
+         '[2018-01-01 00:00:00] bot: Bar.\n'
+         '[2018-01-01 00:00:00] bot: Blah.\n'
+         '[2019-01-01 00:00:00] bot: Progression task started: message.\n'),
+        self.testcase.comments)
 
-    mock_issue = self._make_mock_issue()
+  def test_update_comment_truncate(self):
+    """Test truncating long comments."""
+    self.testcase.comments = '\n' * data_types.TESTCASE_COMMENTS_LENGTH_LIMIT
+    data_handler.update_testcase_comment(
+        self.testcase, data_types.TaskState.STARTED, 'message')
 
-    data_handler.update_issue_impact_labels(self.testcase, mock_issue)
-    mock_issue.add_label.assert_called_with('Security_Impact-Stable')
-    mock_issue.remove_label.assert_not_called()
-
-  def test_update_impact_beta(self):
-    """Tests updating impact to Beta."""
-    self.testcase.is_impact_set_flag = True
-    self.testcase.impact_beta_version = 'Beta'
-
-    mock_issue = self._make_mock_issue()
-
-    data_handler.update_issue_impact_labels(self.testcase, mock_issue)
-    mock_issue.add_label.assert_called_with('Security_Impact-Beta')
-    mock_issue.remove_label.assert_not_called()
-
-  def test_update_impact_head(self):
-    """Tests updating impact to Head."""
-    self.testcase.is_impact_set_flag = True
-
-    mock_issue = self._make_mock_issue()
-
-    data_handler.update_issue_impact_labels(self.testcase, mock_issue)
-    mock_issue.add_label.assert_called_with('Security_Impact-Head')
-    mock_issue.remove_label.assert_not_called()
-
-  def test_no_impact(self):
-    """Tests no impact."""
-    mock_issue = self._make_mock_issue()
-
-    data_handler.update_issue_impact_labels(self.testcase, mock_issue)
-    mock_issue.add_label.assert_not_called()
-    mock_issue.remove_label.assert_not_called()
-
-  def test_replace_impact(self):
-    """Tests replacing impact."""
-    self.testcase.is_impact_set_flag = True
-
-    mock_issue = self._make_mock_issue()
-    mock_issue.labels = ['Security_Impact-Beta']
-
-    data_handler.update_issue_impact_labels(self.testcase, mock_issue)
-    mock_issue.add_label.assert_called_with('Security_Impact-Head')
-    mock_issue.remove_label.assert_called_with('Security_Impact-Beta')
-
-  def test_replace_same_impact(self):
-    """Tests replacing same impact."""
-    self.testcase.is_impact_set_flag = True
-
-    mock_issue = self._make_mock_issue()
-    mock_issue.labels = ['Security_Impact-Head']
-
-    data_handler.update_issue_impact_labels(self.testcase, mock_issue)
-    mock_issue.add_label.assert_not_called()
-    mock_issue.remove_label.assert_not_called()
-
-  def test_component_dont_add_label(self):
-    """Test that we don't set labels for component builds."""
-    self.testcase.job_type = 'job'
-    self.testcase.put()
-
-    data_types.Job(
-        name='job',
-        environment_string=(
-            'RELEASE_BUILD_BUCKET_PATH = '
-            'https://example.com/blah-v8-component-([0-9]+).zip\n')).put()
-
-    self.testcase.is_impact_set_flag = True
-    mock_issue = self._make_mock_issue()
-    data_handler.update_issue_impact_labels(self.testcase, mock_issue)
-    mock_issue.add_label.assert_not_called()
-    mock_issue.remove_label.assert_not_called()
+    self.assertEqual(data_types.TESTCASE_COMMENTS_LENGTH_LIMIT,
+                     len(self.testcase.comments))
+    expected_new = (
+        '[2019-01-01 00:00:00] bot: Progression task started: message.\n')
+    expected = (
+        '\n' * (data_types.TESTCASE_COMMENTS_LENGTH_LIMIT - len(expected_new)) +
+        expected_new)
+    self.assertEqual(expected, self.testcase.comments)

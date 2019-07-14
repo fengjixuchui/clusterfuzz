@@ -17,10 +17,9 @@ import mock
 import unittest
 import webtest
 
-import server
 from datastore import data_types
-from google.appengine.ext import testbed
 from tests.test_libs import helpers as test_helpers
+import server
 
 
 class HandlerTest(unittest.TestCase):
@@ -28,26 +27,20 @@ class HandlerTest(unittest.TestCase):
 
   def setUp(self):
     test_helpers.patch(self, [
-        'issue_management.issue_tracker_utils.get_issue_url',
+        'libs.issue_management.issue_tracker_utils.get_issue_url',
         'libs.helpers.get_testcase',
     ])
 
-    self.testbed = testbed.Testbed()
-    self.testbed.activate()
-    self.testbed.init_user_stub()
-
     self.app = webtest.TestApp(server.app)
-
-  def tearDown(self):
-    self.testbed.deactivate()
 
   def test_succeed(self):
     """Test redirection succeeds."""
     testcase = data_types.Testcase()
+    testcase.bug_information = '456789'
     self.mock.get_testcase.return_value = testcase
-    self.mock.get_issue_url.return_value = 'http://google.com/'
+    self.mock.get_issue_url.return_value = 'http://google.com/456789'
 
-    response = self.app.get('/issue/12345/456789')
+    response = self.app.get('/issue/12345')
 
     self.assertEqual(302, response.status_int)
     self.assertEqual('http://google.com/456789', response.headers['Location'])
@@ -60,5 +53,5 @@ class HandlerTest(unittest.TestCase):
     self.mock.get_testcase.return_value = data_types.Testcase()
     self.mock.get_issue_url.return_value = ''
 
-    response = self.app.get('/issue/12345/456789', expect_errors=True)
+    response = self.app.get('/issue/12345', expect_errors=True)
     self.assertEqual(404, response.status_int)

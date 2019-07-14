@@ -28,7 +28,7 @@ from base import utils
 from bot.tasks import setup
 from datastore import data_types
 from datastore import ndb_utils
-from fuzzing import tests
+from fuzzing import testcase_manager
 from metrics import logs
 from system import archive
 from system import environment
@@ -66,7 +66,7 @@ def unpack_crash_testcases(crash_testcases_directory):
 
     # 6. Existing IPC testcases are un-interesting and unused in furthur
     # mutations. Due to size bloat, ignoring these for now.
-    if testcase.absolute_path.endswith(tests.IPCDUMP_EXTENSION):
+    if testcase.absolute_path.endswith(testcase_manager.IPCDUMP_EXTENSION):
       continue
 
     # 7. Ignore testcases that are archives (e.g. Langfuzz fuzzer tests).
@@ -91,7 +91,7 @@ def unpack_crash_testcases(crash_testcases_directory):
     shell.move(input_directory, crash_testcase_directory)
 
     # Re-create input directory for unpacking testcase in next iteration.
-    shell.create_directory_if_needed(input_directory)
+    shell.create_directory(input_directory)
 
     STORED_TESTCASES_LIST.append(testcase_id)
 
@@ -109,11 +109,12 @@ def unpack_crash_testcases(crash_testcases_directory):
   # Rename all fuzzed testcase files as regular files.
   for root, _, files in os.walk(crash_testcases_directory):
     for filename in files:
-      if not filename.startswith(tests.FUZZ_PREFIX):
+      if not filename.startswith(testcase_manager.FUZZ_PREFIX):
         continue
 
       file_path = os.path.join(root, filename)
-      stripped_file_name = os.path.basename(file_path)[len(tests.FUZZ_PREFIX):]
+      stripped_file_name = os.path.basename(file_path)[len(
+          testcase_manager.FUZZ_PREFIX):]
       stripped_file_path = os.path.join(
           os.path.dirname(file_path), stripped_file_name)
       try:
@@ -214,12 +215,12 @@ def main():
   tests_directory = environment.get_value('TESTS_DIR')
   sync_interval = environment.get_value('SYNC_INTERVAL')  # in seconds.
 
-  shell.create_directory_if_needed(tests_directory)
+  shell.create_directory(tests_directory)
 
   # Sync old crash tests.
   logs.log('Syncing old crash tests.')
   crash_testcases_directory = os.path.join(tests_directory, 'CrashTests')
-  shell.create_directory_if_needed(crash_testcases_directory)
+  shell.create_directory(crash_testcases_directory)
   unpack_crash_testcases(crash_testcases_directory)
 
   # Sync web tests.

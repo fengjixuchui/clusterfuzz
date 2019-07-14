@@ -12,20 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Gestures related functions."""
+from __future__ import absolute_import
 
 import os
 import random
 
-import adb
+from . import adb
 
 # Fixed delay in miliseconds between consecutive monkey events.
 MONKEY_THROTTLE_DELAY = 100
 
 # Maximum number of monkey events per testcase.
-NUM_MONKEY_EVENTS = 50
+NUM_MONKEY_EVENTS = 25
 
 
-def get_random_gestures(gesture_count):  # pylint: disable=unused-argument
+def get_random_gestures(_):
   """Return a random gesture seed from monkey framework natively supported by
   Android OS."""
   random_seed = random.getrandbits(32)
@@ -33,8 +34,7 @@ def get_random_gestures(gesture_count):  # pylint: disable=unused-argument
   return [gesture]
 
 
-# pylint: disable=unused-argument
-def run_gestures(gestures, start_time, timeout):
+def run_gestures(gestures, *_):
   """Run the provided interaction gestures."""
   package_name = os.getenv('PKG_NAME')
   if not package_name:
@@ -46,7 +46,7 @@ def run_gestures(gestures, start_time, timeout):
     return
 
   monkey_seed = gestures[0].split(',')[-1]
-  adb.run_adb_shell_command([
+  adb.run_shell_command([
       'monkey', '-p', package_name, '-s', monkey_seed, '--throttle',
       str(MONKEY_THROTTLE_DELAY), '--ignore-security-exceptions',
       str(NUM_MONKEY_EVENTS)

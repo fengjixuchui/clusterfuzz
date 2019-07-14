@@ -12,13 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Utility functions for ml rnn model."""
+from __future__ import division
+from __future__ import print_function
 
+from builtins import object
+from builtins import range
+import numpy as np
 import os
 import random
 import sys
 
-import constants
-import numpy as np
+from bot.fuzzers.ml.rnn import constants
 
 
 def validate_model_path(model_path):
@@ -82,7 +86,7 @@ def encode_text(string_data):
   Returns:
     An encoded list of integers representing code points.
   """
-  return map(ord, string_data)
+  return list(map(ord, string_data))
 
 
 def decode_to_text(encoded_list):
@@ -182,7 +186,7 @@ def find_input_index(index, input_ranges):
 def print_learning_learned_comparison(x, y, losses, input_ranges, batch_loss,
                                       batch_accuracy, epoch_size, index, epoch):
   """Display utility for printing learning statistics."""
-  print
+  print()
 
   # epoch_size in number of batches.
   batch_size = x.shape[0]
@@ -199,7 +203,7 @@ def print_learning_learned_comparison(x, y, losses, input_ranges, batch_loss,
     epoch_string = '{:6d}'.format(index) + ' (epoch {}) '.format(epoch)
     loss_string = 'loss: {:.5f}'.format(losses[k])
     print_string = epoch_string + formatted_inputname + ' | {} | {} | {}'
-    print print_string.format(formatted_decx, formatted_decy, loss_string)
+    print(print_string.format(formatted_decx, formatted_decy, loss_string))
     index += sequence_len
 
   format_string = '{:-^' + str(len(epoch_string)) + '}'
@@ -210,7 +214,7 @@ def print_learning_learned_comparison(x, y, losses, input_ranges, batch_loss,
   footer = format_string.format('INDEX', 'INPUT NAME',
                                 'TRAINING SEQUENCE (truncated)',
                                 'PREDICTED SEQUENCE (truncated)', 'LOSS')
-  print footer
+  print(footer)
 
   # Print statistics
   batch_index = start_index_in_epoch // (batch_size * sequence_len)
@@ -218,7 +222,7 @@ def print_learning_learned_comparison(x, y, losses, input_ranges, batch_loss,
                                                    epoch)
   stats = '{: <28} batch loss: {:.5f}, batch accuracy: {:.5f}'.format(
       batch_string, batch_loss, batch_accuracy)
-  print '\nTRAINING STATS: {}'.format(stats)
+  print('\nTRAINING STATS: {}'.format(stats))
 
 
 class Progress(object):
@@ -259,7 +263,7 @@ class Progress(object):
   def __print_header(self):
     """Print progress bar header."""
     format_string = '\n0%{: ^' + str(self.size - 6) + '}100%'
-    print format_string.format(self.msg)
+    print(format_string.format(self.msg))
     self.header_printed = True
 
   def __start_progress(self, maxi):
@@ -275,7 +279,7 @@ class Progress(object):
       for _ in range(maxi):
         k = 0
         while d >= 0:
-          print '=',
+          print('=', end=' ')
           sys.stdout.write('')
           sys.stdout.flush()
           k += 1
@@ -314,7 +318,7 @@ def read_data_files(directory, validation=False):
           'name': input_file.rsplit('/', 1)[-1]
       })
 
-  print 'Loaded {} corpus files.'.format(len(input_list))
+  print('Loaded {} corpus files.'.format(len(input_list)))
 
   if not input_ranges:
     sys.exit('No training data has been found. Aborting.')
@@ -384,9 +388,9 @@ def print_validation_stats(loss, accuracy):
 
 def print_text_generation_header():
   """Print generation header."""
-  print '\n{:-^138}'.format(' Generating random text from learned state ')
+  print('\n{:-^138}'.format(' Generating random text from learned state '))
 
 
 def print_text_generation_footer():
   """Print generation footer."""
-  print '\n{:-^138}'.format(' End of generation ')
+  print('\n{:-^138}'.format(' End of generation '))

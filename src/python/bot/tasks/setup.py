@@ -13,6 +13,7 @@
 # limitations under the License.
 """Common helper functions for setup at the start of tasks."""
 
+from builtins import range
 import datetime
 import os
 import time
@@ -29,13 +30,12 @@ from datastore import data_types
 from datastore import locks
 from datastore import ndb_utils
 from fuzzing import leak_blacklist
-from fuzzing import tests
+from fuzzing import testcase_manager
 from google_cloud_utils import blobs
 from google_cloud_utils import storage
 from metrics import fuzzer_logs
 from metrics import logs
 from platforms import android
-from platforms import fuchsia
 from system import archive
 from system import environment
 from system import shell
@@ -65,7 +65,7 @@ def _copy_testcase_to_device_and_setup_environment(testcase,
   job_type_has_privileged_access = environment.get_value('PRIVILEGED_ACCESS')
   if job_type_has_privileged_access:
     # Install testcase if it is an app.
-    package_name = android.adb.get_package_name(testcase_file_path)
+    package_name = android.app.get_package_name(testcase_file_path)
     if package_name:
       # Set the package name for later use.
       environment.set_value('PKG_NAME', package_name)
@@ -86,10 +86,37 @@ def _copy_testcase_to_device_and_setup_environment(testcase,
         testcase_file_path.startswith(local_testcases_directory)):
       relative_testcase_file_path = (
           testcase_file_path[len(local_testcases_directory) + 1:])
-      device_testcase_file_path = os.path.join(android.adb.DEVICE_TESTCASES_DIR,
-                                               relative_testcase_file_path)
-      android.adb.run_adb_shell_command(
+      device_testcase_file_path = os.path.join(
+          android.constants.DEVICE_TESTCASES_DIR, relative_testcase_file_path)
+      android.adb.run_shell_command(
           ['chmod', '0755', device_testcase_file_path])
+
+
+def prepare_environment_for_testcase(testcase):
+  """Set various environment variables based on the test case."""
+  # Setup memory debugging tool environment.
+  environment.reset_current_memory_tool_options(redzone_size=testcase.redzone)
+
+  # Setup environment variable for windows size and location properties.
+  # Explicitly use empty string to indicate use of default window properties.
+  if hasattr(testcase, 'window_argument'):
+    environment.set_value('WINDOW_ARG', testcase.window_argument)
+
+  # Adjust timeout based on the stored multiplier (if available).
+  if hasattr(testcase, 'timeout_multiplier') and testcase.timeout_multiplier:
+    test_timeout = environment.get_value('TEST_TIMEOUT')
+    environment.set_value('TEST_TIMEOUT',
+                          int(test_timeout * testcase.timeout_multiplier))
+
+  # Override APP_ARGS with minimized arguments (if available).
+  if (hasattr(testcase, 'minimized_arguments') and
+      testcase.minimized_arguments):
+    environment.set_value('APP_ARGS', testcase.minimized_arguments)
+
+  # Add FUZZ_TARGET to environment if this is a fuzz target testcase.
+  fuzz_target = testcase.get_metadata('fuzzer_binary_name')
+  if fuzz_target:
+    environment.set_value('FUZZ_TARGET', fuzz_target)
 
 
 def setup_testcase(testcase):
@@ -103,9 +130,6 @@ def setup_testcase(testcase):
 
   # Clear testcase directories.
   shell.clear_testcase_directories()
-
-  # Setup memory debugging tool environment.
-  environment.reset_current_memory_tool_options(redzone_size=testcase.redzone)
 
   # Adjust the test timeout value if this is coming from an user uploaded
   # testcase.
@@ -128,13 +152,13 @@ def setup_testcase(testcase):
       logs.log_error('Closed testcase %d with invalid fuzzer %s.' %
                      (testcase_id, fuzzer_name))
 
-      error_message = 'Fuzzer %s no longer exists.' % fuzzer_name
+      error_message = 'Fuzzer %s no longer exists' % fuzzer_name
       data_handler.update_testcase_comment(testcase, data_types.TaskState.ERROR,
                                            error_message)
       return None, None, None
 
     if not update_successful:
-      error_message = 'Unable to setup fuzzer %s.' % fuzzer_name
+      error_message = 'Unable to setup fuzzer %s' % fuzzer_name
       data_handler.update_testcase_comment(testcase, data_types.TaskState.ERROR,
                                            error_message)
       tasks.add_task(
@@ -144,7 +168,7 @@ def setup_testcase(testcase):
   # Extract the testcase and any of its resources to the input directory.
   file_list, input_directory, testcase_file_path = unpack_testcase(testcase)
   if not file_list:
-    error_message = 'Unable to setup testcase %s.' % testcase_file_path
+    error_message = 'Unable to setup testcase %s' % testcase_file_path
     data_handler.update_testcase_comment(testcase, data_types.TaskState.ERROR,
                                          error_message)
     tasks.add_task(
@@ -155,9 +179,6 @@ def setup_testcase(testcase):
   # one on the device.
   if environment.platform() == 'ANDROID':
     _copy_testcase_to_device_and_setup_environment(testcase, testcase_file_path)
-
-  if environment.platform() == 'FUCHSIA':
-    fuchsia.device.copy_testcase_to_device(testcase_file_path)
 
   # Push testcases to worker.
   if environment.is_trusted_host():
@@ -170,26 +191,7 @@ def setup_testcase(testcase):
     # Get local blacklist without this testcase's entry.
     leak_blacklist.copy_global_to_local_blacklist(excluded_testcase=testcase)
 
-  # Setup environment variable for windows size and location properties.
-  # Explicitly use empty string to indicate use of default window properties.
-  if hasattr(testcase, 'window_argument'):
-    environment.set_value('WINDOW_ARG', testcase.window_argument)
-
-  # Adjust timeout based on the stored multiplier (if available).
-  if hasattr(testcase, 'timeout_multiplier') and testcase.timeout_multiplier:
-    test_timeout = environment.get_value('TEST_TIMEOUT')
-    environment.set_value('TEST_TIMEOUT',
-                          int(test_timeout * testcase.timeout_multiplier))
-
-  # Override APP_ARGS with minimized arguments (if available).
-  if (hasattr(testcase, 'minimized_arguments') and
-      testcase.minimized_arguments):
-    environment.set_value('APP_ARGS', testcase.minimized_arguments)
-
-  # Add FUZZ_TARGET to environment if this is a fuzz target testcase.
-  fuzz_target = testcase.get_metadata('fuzzer_binary_name')
-  if fuzz_target:
-    environment.set_value('FUZZ_TARGET', fuzz_target)
+  prepare_environment_for_testcase(testcase)
 
   return file_list, input_directory, testcase_file_path
 
@@ -322,7 +324,7 @@ def update_data_bundle(fuzzer, data_bundle):
     logs.log_error('Failed to setup data bundle %s.' % data_bundle.name)
     return False
 
-  if not shell.create_directory_if_needed(
+  if not shell.create_directory(
       data_bundle_directory, create_intermediates=True):
     logs.log_error(
         'Failed to create data bundle %s directory.' % data_bundle.name)
@@ -372,7 +374,7 @@ def update_data_bundle(fuzzer, data_bundle):
       return False
 
   # Update the testcase list file.
-  tests.create_testcase_list_file(data_bundle_directory)
+  testcase_manager.create_testcase_list_file(data_bundle_directory)
 
   #  Write last synced time in the sync file.
   sync_file_path = _get_data_bundle_sync_file_path(data_bundle_directory)
@@ -452,7 +454,7 @@ def update_fuzzer_and_data_bundles(fuzzer_name):
       return False
 
     # Make fuzzer executable.
-    os.chmod(fuzzer_path, 0750)
+    os.chmod(fuzzer_path, 0o750)
 
     # Cleanup unneeded archive.
     shell.remove_file(archive_path)
@@ -471,8 +473,8 @@ def update_fuzzer_and_data_bundles(fuzzer_name):
 
   # Setup environment variable for launcher script path.
   if fuzzer.launcher_script:
-    fuzzer_launcher_path = utils.get_launch_path_for_script(
-        fuzzer_directory, fuzzer.launcher_script)
+    fuzzer_launcher_path = shell.get_execute_command(
+        os.path.join(fuzzer_directory, fuzzer.launcher_script))
     environment.set_value('LAUNCHER_PATH', fuzzer_launcher_path)
 
   return True
@@ -480,7 +482,8 @@ def update_fuzzer_and_data_bundles(fuzzer_name):
 
 def _is_search_index_data_bundle(data_bundle_name):
   """Return true on if this is a search index data bundle, false otherwise."""
-  return data_bundle_name.startswith(tests.SEARCH_INDEX_BUNDLE_PREFIX)
+  return data_bundle_name.startswith(
+      testcase_manager.SEARCH_INDEX_BUNDLE_PREFIX)
 
 
 def _is_data_bundle_up_to_date(data_bundle, data_bundle_directory):
@@ -528,8 +531,8 @@ def _get_nfs_data_bundle_path(data_bundle_name):
   # Special naming and path for search index based bundles.
   if _is_search_index_data_bundle(data_bundle_name):
     return os.path.join(
-        nfs_root, tests.SEARCH_INDEX_TESTCASES_DIRNAME,
-        data_bundle_name[len(tests.SEARCH_INDEX_BUNDLE_PREFIX):])
+        nfs_root, testcase_manager.SEARCH_INDEX_TESTCASES_DIRNAME,
+        data_bundle_name[len(testcase_manager.SEARCH_INDEX_BUNDLE_PREFIX):])
 
   return os.path.join(nfs_root, data_bundle_name)
 
@@ -560,16 +563,19 @@ def get_data_bundle_directory(fuzzer_name):
     # have their own data bundle.
     return environment.get_value('FUZZ_DATA')
 
+  local_data_bundles_directory = environment.get_value('DATA_BUNDLES_DIR')
+  local_data_bundle_directory = os.path.join(local_data_bundles_directory,
+                                             data_bundle.name)
+
   if data_bundle.is_local:
     # Data bundle is on local disk, return path.
-    data_bundles_directory = environment.get_value('DATA_BUNDLES_DIR')
-    return os.path.join(data_bundles_directory, data_bundle.name)
+    return local_data_bundle_directory
 
   # This data bundle is on NFS, calculate path.
-  # Make sure that nfs directory is set.
+  # Make sure that NFS_ROOT pointing to nfs server is set. If not, use local.
   if not environment.get_value('NFS_ROOT'):
-    logs.log_error('NFS root is not set.')
-    return None
+    logs.log_warn('NFS_ROOT is not set, using local corpora directory.')
+    return local_data_bundle_directory
 
   return _get_nfs_data_bundle_path(data_bundle.name)
 
@@ -612,7 +618,8 @@ def archive_testcase_and_dependencies_in_gcs(resource_list, testcase_path):
 
   # Add resource dependencies based on testcase path. These include
   # stuff like extensions directory, dependency files, etc.
-  resource_list.extend(tests.get_resource_dependencies(testcase_path))
+  resource_list.extend(
+      testcase_manager.get_resource_dependencies(testcase_path))
 
   # Filter out duplicates, directories, and files that do not exist.
   resource_list = utils.filter_file_list(resource_list)
@@ -621,6 +628,7 @@ def archive_testcase_and_dependencies_in_gcs(resource_list, testcase_path):
 
   if len(resource_list) <= 1:
     # If this does not have any resources, just save the testcase.
+    # TODO(flowerhack): Update this when we teach CF how to download testcases.
     try:
       file_handle = open(testcase_path, 'rb')
     except IOError:
@@ -632,10 +640,10 @@ def archive_testcase_and_dependencies_in_gcs(resource_list, testcase_path):
     # Find the common root directory for all of the resources.
     # Assumption: resource_list[0] is the testcase path.
     base_directory_list = resource_list[0].split(os.path.sep)
-    for list_index in xrange(1, len(resource_list)):
+    for list_index in range(1, len(resource_list)):
       current_directory_list = resource_list[list_index].split(os.path.sep)
       length = min(len(base_directory_list), len(current_directory_list))
-      for directory_index in xrange(length):
+      for directory_index in range(length):
         if (current_directory_list[directory_index] !=
             base_directory_list[directory_index]):
           base_directory_list = base_directory_list[0:directory_index]

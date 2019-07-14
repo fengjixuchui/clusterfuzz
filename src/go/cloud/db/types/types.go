@@ -1,4 +1,4 @@
-// Copyright 2018 Google LLC
+// Copyright 2019 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,6 +21,12 @@ import (
 
 	"cloud.google.com/go/datastore"
 )
+
+// Admin is auto-generated from data_types.py.
+type Admin struct {
+	Key   *datastore.Key `datastore:"__key__"`
+	Email string         `datastore:"email"`
+}
 
 // Blacklist is auto-generated from data_types.py.
 type Blacklist struct {
@@ -88,8 +94,6 @@ type Config struct {
 	TestAccountEmail                    string         `datastore:"test_account_email"`
 	TestAccountPassword                 string         `datastore:"test_account_password"`
 	PrivilegedUsers                     string         `datastore:"privileged_users,noindex"`
-	StackBlacklist                      string         `datastore:"stack_blacklist,noindex"`
-	StackCleanRegex                     string         `datastore:"stack_clean_regex,noindex"`
 	ContactString                       string         `datastore:"contact_string"`
 	RevisionVarsURL                     string         `datastore:"revision_vars_url,noindex"`
 	ComponentRepositoryMappings         string         `datastore:"component_repository_mappings,noindex"`
@@ -98,13 +102,17 @@ type Config struct {
 	BugReportURL                        string         `datastore:"bug_report_url"`
 	PlatformGroupMappings               string         `datastore:"platform_group_mappings,noindex"`
 	RelaxTestcaseRestrictions           bool           `datastore:"relax_testcase_restrictions"`
+	RelaxSecurityBugRestrictions        bool           `datastore:"relax_security_bug_restrictions"`
 	CoverageReportsBucket               string         `datastore:"coverage_reports_bucket"`
 	GithubCredentials                   string         `datastore:"github_credentials"`
-	ClusterfuzzToolsClientSecret        string         `datastore:"clusterfuzz_tools_client_secret"`
+	ReproduceToolClientID               string         `datastore:"reproduce_tool_client_id"`
+	ReproduceToolClientSecret           string         `datastore:"reproduce_tool_client_secret"`
 	PredatorCrashTopic                  string         `datastore:"predator_crash_topic"`
 	PredatorResultTopic                 string         `datastore:"predator_result_topic"`
 	WifiSsid                            string         `datastore:"wifi_ssid"`
 	WifiPassword                        string         `datastore:"wifi_password"`
+	SendgridApiKey                      string         `datastore:"sendgrid_api_key"`
+	SendgridSender                      string         `datastore:"sendgrid_sender"`
 }
 
 // CoverageInformation is auto-generated from data_types.py.
@@ -158,6 +166,13 @@ type FiledBug struct {
 	CrashState     string         `datastore:"crash_state"`
 	SecurityFlag   bool           `datastore:"security_flag"`
 	PlatformID     string         `datastore:"platform_id"`
+}
+
+// FuzzStrategyProbability is auto-generated from data_types.py.
+type FuzzStrategyProbability struct {
+	Key          *datastore.Key `datastore:"__key__"`
+	StrategyName string         `datastore:"strategy_name"`
+	Probability  float64        `datastore:"probability"`
 }
 
 // FuzzTarget is auto-generated from data_types.py.
@@ -262,16 +277,6 @@ type Lock struct {
 	Key            *datastore.Key `datastore:"__key__"`
 	ExpirationTime time.Time      `datastore:"expiration_time"`
 	Holder         string         `datastore:"holder"`
-}
-
-// LockStatShard is auto-generated from data_types.py.
-type LockStatShard struct {
-	Key            *datastore.Key `datastore:"__key__"`
-	Acquires       int            `datastore:"acquires"`
-	Bails          int            `datastore:"bails"`
-	FailedAcquires int            `datastore:"failed_acquires"`
-	Lost           int            `datastore:"lost"`
-	WaitTime       int            `datastore:"wait_time"`
 }
 
 // Notification is auto-generated from data_types.py.
@@ -381,7 +386,6 @@ type Testcase struct {
 	GroupBugInformation        int            `datastore:"group_bug_information"`
 	Gestures                   []string       `datastore:"gestures,noindex"`
 	Redzone                    int            `datastore:"redzone,noindex"`
-	Video                      string         `datastore:"video,noindex"`
 	Open                       bool           `datastore:"open"`
 	TimeoutMultiplier          float64        `datastore:"timeout_multiplier,noindex"`
 	AdditionalMetadata         string         `datastore:"additional_metadata,noindex"`

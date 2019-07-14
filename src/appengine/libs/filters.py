@@ -16,6 +16,7 @@
   inside."""
 # pylint: disable=invalid-name
 
+from builtins import object
 import re
 import sys
 
@@ -65,7 +66,7 @@ def get_boolean(value):
 
 def get_string(value):
   """Get sanitized string."""
-  return value.strip().lower()
+  return value.strip()
 
 
 class Filter(object):

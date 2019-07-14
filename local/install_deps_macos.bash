@@ -14,24 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-if ! which brew 2>&1 > /dev/null; then
+if ! which brew > /dev/null 2>&1; then
   echo 'Please install homebrew (https://brew.sh).'
   exit 1
 fi
 
-brew tap bazelbuild/tap
-brew tap-pin bazelbuild/tap
-
-brew install \
-    bazel \
-    golang \
-    node \
-    nodeenv \
-    npm \
-    pkill \
-    python@2 \
-    xz
-
+brew bundle --file=$(dirname "$0")/Brewfile
 pip install virtualenv
 
 # Setup virtualenv.

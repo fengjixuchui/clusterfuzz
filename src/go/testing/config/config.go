@@ -1,4 +1,4 @@
-// Copyright 2018 Google LLC
+// Copyright 2019 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ func IntegrationTestBucketStatic() string {
 // integration tests.
 func IntegrationTestBucketMutable() string {
 	// TODO(ochang): Before running tests, clear this bucket.
-	return os.Getenv("CLUSTERFUZZ_MUTABLE_TEST_BUCKET")
+	return os.Getenv("TEST_BUCKET")
 }
 
 // IntegrationTestsEnabled returns whether or not integration tests are enabled.

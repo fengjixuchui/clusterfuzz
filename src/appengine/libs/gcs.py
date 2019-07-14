@@ -13,15 +13,19 @@
 # limitations under the License.
 """App Engine GCS helpers."""
 
+from builtins import object
+from future import standard_library
+standard_library.install_aliases()
 import base64
 import collections
 import datetime
 import json
 import time
-import urllib
+import urllib.parse
 
-from google.appengine.api import app_identity
+import googleapiclient
 
+from base import utils
 from google_cloud_utils import blobs
 from google_cloud_utils import storage
 from system import environment
@@ -33,6 +37,29 @@ MAX_UPLOAD_SIZE = 15 * 1024 * 1024 * 1024  # 15 GB.
 GcsUpload = collections.namedtuple(
     'GcsUpload',
     ['url', 'bucket', 'key', 'google_access_id', 'policy', 'signature'])
+
+
+class GcsError(Exception):
+  """Base class for exceptions in this module."""
+
+
+def sign_data(data):
+  """Sign data with the default App Engine service account."""
+  iam = googleapiclient.discovery.build('iamcredentials', 'v1')
+  service_account = 'projects/-/serviceAccounts/' + utils.service_account_email(
+  )
+
+  response = iam.projects().serviceAccounts().signBlob(
+      name=service_account,
+      body={
+          'delegates': [],
+          'payload': base64.b64encode(data),
+      }).execute()
+
+  try:
+    return base64.b64decode(response['signedBlob'])
+  except Exception as e:
+    raise GcsError('Invalid response: ' + str(e))
 
 
 class SignedGcsHandler(object):
@@ -47,7 +74,7 @@ class SignedGcsHandler(object):
           'response-content-disposition': content_disposition,
       }
 
-      url += '&' + urllib.urlencode(content_disposition_params)
+      url += '&' + urllib.parse.urlencode(content_disposition_params)
 
     self.redirect(url)
 
@@ -72,8 +99,8 @@ def get_signed_url(bucket_name,
     service_account_name = 'service_account'
   else:
     url = STORAGE_URL % bucket_name
-    signed_blob = app_identity.sign_blob(str(blob))[1]
-    service_account_name = app_identity.get_service_account_name()
+    signed_blob = sign_data(str(blob))
+    service_account_name = utils.service_account_email()
 
   params = {
       'GoogleAccessId': service_account_name,
@@ -81,7 +108,7 @@ def get_signed_url(bucket_name,
       'Signature': base64.b64encode(signed_blob),
   }
 
-  return str(url + '/' + path + '?' + urllib.urlencode(params))
+  return str(url + '/' + path + '?' + urllib.parse.urlencode(params))
 
 
 def prepare_upload(bucket_name, path, expiry=DEFAULT_URL_VALID_SECONDS):
@@ -113,8 +140,8 @@ def prepare_upload(bucket_name, path, expiry=DEFAULT_URL_VALID_SECONDS):
     service_account_name = 'service_account'
   else:
     url = STORAGE_URL % bucket_name
-    signature = base64.b64encode(app_identity.sign_blob(policy)[1])
-    service_account_name = app_identity.get_service_account_name()
+    signature = base64.b64encode(sign_data(policy))
+    service_account_name = utils.service_account_email()
 
   return GcsUpload(url, bucket_name, path, service_account_name, policy,
                    signature)

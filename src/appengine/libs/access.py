@@ -13,7 +13,8 @@
 # limitations under the License.
 """access.py contains static methods around access permissions."""
 
-from google.appengine.api import users
+from builtins import object
+from builtins import range
 
 from base import errors
 from base import external_users
@@ -21,8 +22,9 @@ from base import utils
 from config import db_config
 from config import local_config
 from datastore import data_handler
-from issue_management import issue_tracker_utils
+from libs import auth
 from libs import helpers
+from libs.issue_management import issue_tracker_utils
 
 
 def _is_privileged_user(email):
@@ -64,7 +66,7 @@ def _is_domain_allowed(email):
 
 
 class UserAccess(object):
-  Allowed, Denied, Redirected = range(3)  # pylint: disable=invalid-name
+  Allowed, Denied, Redirected = list(range(3))  # pylint: disable=invalid-name
 
 
 def has_access(need_privileged_access=False, job_type=None, fuzzer_name=None):
@@ -79,14 +81,14 @@ def has_access(need_privileged_access=False, job_type=None, fuzzer_name=None):
 
 def get_access(need_privileged_access=False, job_type=None, fuzzer_name=None):
   """Return 'allowed', 'redirected', or 'failed'."""
-  if users.is_current_user_admin():
+  if auth.is_current_user_admin():
     return UserAccess.Allowed
 
-  user = users.get_current_user()
+  user = auth.get_current_user()
   if not user:
     return UserAccess.Redirected
 
-  email = user.email()
+  email = user.email
   if _is_privileged_user(email):
     return UserAccess.Allowed
 
@@ -105,10 +107,14 @@ def get_access(need_privileged_access=False, job_type=None, fuzzer_name=None):
 
 def can_user_access_testcase(testcase):
   """Checks if the current user can access the testcase."""
+  config = db_config.get()
+  need_privileged_access = (
+      testcase.security_flag and not config.relax_security_bug_restrictions)
+
   if has_access(
-      fuzzer_name=testcase.fuzzer_name,
+      fuzzer_name=testcase.actual_fuzzer_name(),
       job_type=testcase.job_type,
-      need_privileged_access=testcase.security_flag):
+      need_privileged_access=need_privileged_access):
     return True
 
   user_email = helpers.get_user_email()
@@ -120,18 +126,32 @@ def can_user_access_testcase(testcase):
   if not issue_id:
     return False
 
-  itm = issue_tracker_utils.get_issue_tracker_manager(testcase)
-  issue = itm.get_issue(int(issue_id))
-  if not issue:
+  issue_tracker = issue_tracker_utils.get_issue_tracker_for_testcase(testcase)
+  associated_issue = issue_tracker.get_issue(issue_id)
+  if not associated_issue:
     return False
 
-  config = db_config.get()
-  if config.relax_testcase_restrictions or _is_domain_allowed(user_email):
-    return (any(utils.emails_equal(user_email, cc) for cc in issue.cc) or
-            utils.emails_equal(user_email, issue.owner) or
-            utils.emails_equal(user_email, issue.reporter))
+  # Look at both associated issue and original issue (if the associated one
+  # is a duplicate of the original issue).
+  issues_to_check = [associated_issue]
+  if associated_issue.merged_into:
+    original_issue = issue_tracker.get_original_issue(issue_id)
+    if original_issue:
+      issues_to_check.append(original_issue)
 
-  return utils.emails_equal(user_email, issue.owner)
+  relaxed_restrictions = (
+      config.relax_testcase_restrictions or _is_domain_allowed(user_email))
+  for issue in issues_to_check:
+    if relaxed_restrictions:
+      if (any(utils.emails_equal(user_email, cc) for cc in issue.ccs) or
+          utils.emails_equal(user_email, issue.assignee) or
+          utils.emails_equal(user_email, issue.reporter)):
+        return True
+
+    elif utils.emails_equal(user_email, issue.assignee):
+      return True
+
+  return False
 
 
 def check_access_and_get_testcase(testcase_id):

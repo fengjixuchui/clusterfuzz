@@ -1,4 +1,4 @@
-// Copyright 2018 Google LLC
+// Copyright 2019 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +13,8 @@
 // limitations under the License.
 
 syntax = "proto2";
+
+option go_package = "clusterfuzz/protos/untrusted_runner";
 
 message GetStatusRequest {
 }
@@ -47,8 +49,8 @@ message SetupRegularBuildRequest {
   optional string base_build_dir = 1;
   optional int64 revision = 2;
   optional string build_url = 3;
-  optional string build_dir_name = 4;
-  map<string, double> target_weights = 5;
+  map<string, double> target_weights = 4;
+  optional string build_prefix = 5;
 }
 
 message SetupSymbolizedBuildRequest {

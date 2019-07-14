@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """shell tests."""
+from builtins import object
 import mock
 import os
 import unittest
@@ -161,7 +162,7 @@ class RemoveDirectoryTest(unittest.TestCase):
 
     onerror(fake_fn, 'dir/child', ImportError())
 
-    self.mock.chmod.assert_has_calls([mock.call('dir/child', 0750)])
+    self.mock.chmod.assert_has_calls([mock.call('dir/child', 0o750)])
     fake_fn.assert_has_calls([mock.call('dir/child')])
 
 
@@ -206,7 +207,7 @@ class WhichTest(fake_filesystem_unittest.TestCase):
       self.skipTest('Which test is only supported on posix platforms.')
 
   def test(self):
-    self.assertEqual('/bin/ls', shell.which('ls'))
+    self.assertTrue(shell.which('ls') in ['/bin/ls', '/usr/bin/ls'])
 
 
 class ClearSystemTempDirectoryTest(fake_filesystem_unittest.TestCase):
@@ -241,3 +242,46 @@ class ClearSystemTempDirectoryTest(fake_filesystem_unittest.TestCase):
     self.assertFalse(os.path.exists('/tmp/cc/dd/ee.txt'))
     self.assertFalse(os.path.exists('/tmp/ff/gg'))
     self.assertFalse(os.path.exists('/tmp/hh'))
+
+
+class GetExecuteCommand(unittest.TestCase):
+  """Test that the correct commands to run files are returned."""
+
+  def call_and_assert_helper(self, expected_command, file_to_execute):
+    """Call get_execute_command on |file_to_execute| and assert result equal to
+    |expected_command|."""
+    self.assertEqual(expected_command,
+                     shell.get_execute_command(file_to_execute))
+
+  def test_standard_script(self):
+    """Test correct command returned for python script."""
+    script_name = 'script.py'
+    expected_command = 'python %s' % script_name
+    self.call_and_assert_helper(expected_command, script_name)
+
+  def test_java(self):
+    """Test correct launch command returned for Java class."""
+    script_name = 'javaclassfile.class'
+    expected_command = 'java javaclassfile'
+    self.call_and_assert_helper(expected_command, script_name)
+
+  def test_binary(self):
+    """Test correct launch command returned for a binary (executable) file."""
+    executable_name = 'executable'
+    self.call_and_assert_helper(executable_name, executable_name)
+
+    executable_name += '.exe'
+    self.call_and_assert_helper(executable_name, executable_name)
+
+
+class GetInterpreter(object):
+  """Test that the correct interpreters to execute a file are returned."""
+
+  def get_interpreted_file_test(self):
+    """Test correct interpreter is returned for a file that needs one."""
+    self.assertEqual('python', shell.get_interpreter('run.py'))
+
+  def get_non_interpreter_file_test(self):
+    """Test that None is returned for a file that doesn't need one. We don't
+    want empty string since this is easier to than None. """
+    self.assertIsNone(shell.get_interpreter('executable'))

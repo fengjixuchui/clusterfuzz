@@ -13,13 +13,14 @@
 # limitations under the License.
 """Handler that uploads a testcase"""
 
+from future import standard_library
+standard_library.install_aliases()
+from builtins import object
 import ast
+import cgi
 import datetime
+import io
 import json
-import StringIO
-
-from google.appengine.ext import blobstore
-from google.appengine.ext.webapp import blobstore_handlers
 
 from base import external_users
 from base import tasks
@@ -35,6 +36,7 @@ from libs import form
 from libs import gcs
 from libs import handler
 from libs import helpers
+from libs.issue_management import issue_tracker_utils
 from libs.query import datastore_query
 from system import archive
 
@@ -42,6 +44,7 @@ MAX_RETRIES = 50
 RUN_FILE_PATTERNS = ['run', 'fuzz-', 'index.', 'crash.']
 PAGE_SIZE = 20
 MORE_LIMIT = 100 - PAGE_SIZE
+UPLOAD_URL = '/upload-testcase/upload-oauth'
 
 
 def attach_testcases(rows):
@@ -59,7 +62,7 @@ def attach_testcases(rows):
           'isSecurity': testcase.security_flag,
           'issueNumber': testcase.bug_information,
           'job': testcase.job_type,
-          'fuzzerName': testcase.overridden_fuzzer_name or testcase.fuzzer_name
+          'fuzzerName': testcase.actual_fuzzer_name()
       }
     row['testcase'] = testcase
 
@@ -105,19 +108,19 @@ def get_result(this):
   return result, params
 
 
-def _read_to_stringio(gcs_path):
-  """Return a StringIO representing a GCS object."""
+def _read_to_bytesio(gcs_path):
+  """Return a bytesio representing a GCS object."""
   data = storage.read_data(gcs_path)
   if not data:
-    raise helpers.EarlyExitException('Failed to read uploaded archive.')
+    raise helpers.EarlyExitException('Failed to read uploaded archive.', 500)
 
-  return StringIO.StringIO(data)
+  return io.BytesIO(data)
 
 
 def guess_input_file(uploaded_file, filename):
   """Guess the main test case file from an archive."""
   for file_pattern in RUN_FILE_PATTERNS:
-    blob_reader = _read_to_stringio(uploaded_file.gcs_path)
+    blob_reader = _read_to_bytesio(uploaded_file.gcs_path)
     file_path_input = archive.get_first_file_matching(file_pattern, blob_reader,
                                                       filename)
     if file_path_input:
@@ -234,14 +237,12 @@ class PrepareUploadHandler(base_handler.Handler):
 class UploadUrlHandlerOAuth(base_handler.Handler):
   """Handler that creates an upload URL (OAuth)."""
 
-  UPLOAD_URL = '/upload-testcase/upload-oauth'
-
   @handler.oauth
   @handler.check_user_access(need_privileged_access=False)
   def post(self):
     """Serves the url."""
     self.render_json({
-        'uploadUrl': blobstore.create_upload_url(self.UPLOAD_URL)
+        'uploadUrl': self.request.host_url + UPLOAD_URL,
     })
 
 
@@ -506,6 +507,15 @@ class UploadHandlerCommon(object):
         bug_summary_update_flag,
         additional_metadata=testcase_metadata)
 
+    testcase = data_handler.get_testcase_by_id(testcase_id)
+    issue = issue_tracker_utils.get_issue_for_testcase(testcase)
+    if issue:
+      report_url = data_handler.TESTCASE_REPORT_URL.format(
+          domain=data_handler.get_domain(), testcase_id=testcase_id)
+      comment = ('ClusterFuzz is analyzing your testcase. '
+                 'Developers can follow the progress at %s.' % report_url)
+      issue.save(new_comment=comment)
+
     helpers.log('Uploaded testcase %s' % testcase_id, helpers.VIEW_OPERATION)
     self.render_json({'id': '%s' % testcase_id})
 
@@ -527,20 +537,33 @@ class UploadHandler(UploadHandlerCommon, base_handler.GcsUploadHandler):
     self.do_post()
 
 
-class UploadHandlerOAuth(base_handler.Handler, UploadHandlerCommon,
-                         blobstore_handlers.BlobstoreUploadHandler):
+class NamedBytesIO(io.BytesIO):
+  """Named bytesio."""
+
+  def __init__(self, name, value):
+    self.name = name
+    io.BytesIO.__init__(self, value)
+
+
+class UploadHandlerOAuth(base_handler.Handler, UploadHandlerCommon):
   """Handler that uploads the testcase file (OAuth)."""
 
   # pylint: disable=unused-argument
   def before_render_json(self, values, status):
     """Add upload info when the request fails."""
-    # TODO(ochang): Migrate to GCS upload.
-    values['uploadUrl'] = blobstore.create_upload_url('/upload-testcase/upload')
+    values['uploadUrl'] = self.request.host_url + UPLOAD_URL
 
   def get_upload(self):
-    return (self.get_uploads() or [None])[0]
+    """Get the upload."""
+    uploaded_file = self.request.POST.get('file')
+    if not isinstance(uploaded_file, cgi.FieldStorage):
+      raise helpers.EarlyExitException('File upload not found.', 400)
+
+    bytes_io = NamedBytesIO(uploaded_file.filename, uploaded_file.file.read())
+    key = blobs.write_blob(bytes_io)
+    return blobs.get_blob_info(key)
 
   @handler.oauth
   @handler.post(handler.FORM, handler.JSON)
-  def post(self):
+  def post(self, *args):
     self.do_post()

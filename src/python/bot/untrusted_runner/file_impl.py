@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """File operations implemenations."""
+from __future__ import absolute_import
 
 import os
 
-import file_utils
+from . import file_utils
 
 from bot.fuzzers import utils as fuzzers_utils
 from protos import untrusted_runner_pb2
@@ -24,8 +25,7 @@ from system import shell
 
 def create_directory(request, _):
   """Create a directory."""
-  result = shell.create_directory_if_needed(request.path,
-                                            request.create_intermediates)
+  result = shell.create_directory(request.path, request.create_intermediates)
   return untrusted_runner_pb2.CreateDirectoryResponse(result=result)
 
 

@@ -34,6 +34,8 @@ FILE_COPY_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB.
 HANDLE_OUTPUT_FILE_TYPE_REGEX = re.compile(
     r'.*pid:\s*(\d+)\s*type:\s*File\s*([a-fA-F0-9]+):\s*(.*)')
 
+_system_temp_dir = None
+
 
 def copy_file(source_file_path, destination_file_path):
   """Faster version of shutil.copy with buffer size."""
@@ -70,6 +72,10 @@ def clear_build_urls_directory():
   """Clears the build url directory."""
   remove_directory(environment.get_value('BUILD_URLS_DIR'), recreate=True)
 
+  if environment.is_trusted_host():
+    from bot.untrusted_runner import file_host
+    file_host.clear_build_urls_directory()
+
 
 def clear_crash_stacktraces_directory():
   """Clears the crash stacktraces directory."""
@@ -82,6 +88,11 @@ def clear_data_bundles_directory():
   remove_directory(environment.get_value('DATA_BUNDLES_DIR'), recreate=True)
 
 
+def clear_mutator_plugins_directory():
+  """Clears the mutator plugins directory."""
+  remove_directory(environment.get_value('MUTATOR_PLUGINS_DIR'), recreate=True)
+
+
 def clear_data_directories():
   """Clear all data directories."""
   clear_build_directory()
@@ -91,6 +102,7 @@ def clear_data_directories():
   clear_fuzzers_directories()
   clear_temp_directory()
   clear_testcase_directories()
+  clear_mutator_plugins_directory()
 
 
 def clear_data_directories_on_low_disk_space():
@@ -118,7 +130,7 @@ def clear_temp_directory(clear_user_profile_directories=True):
   """Clear the temporary directories."""
   temp_directory = environment.get_value('BOT_TMPDIR')
   remove_directory(temp_directory, recreate=True)
-  os.chmod(temp_directory, 0777)
+  os.chmod(temp_directory, 0o777)
 
   if not clear_user_profile_directories:
     return
@@ -141,17 +153,22 @@ def clear_system_temp_directory():
     except:
       pass
 
-  system_temp_directory = tempfile.gettempdir()
+  # Cache system temp directory to avoid iterating through the system dir list
+  # on every gettempdir call. Also, it helps to avoid a case where temp dir
+  # fills up the disk and gets ignored by gettempdir.
+  global _system_temp_dir
+  if not _system_temp_dir:
+    _system_temp_dir = tempfile.gettempdir()
 
   # Use a custom cleanup rather than using |remove_directory| since it
   # recreates the directory and can mess up permissions and symlinks.
-  for root, dirs, files in os.walk(system_temp_directory, topdown=False):
+  for root, dirs, files in os.walk(_system_temp_dir, topdown=False):
     for name in files:
       _delete_object(os.path.join(root, name), os.remove)
 
     for name in dirs:
       _delete_object(os.path.join(root, name), os.rmdir)
-  logs.log('Cleared system temp directory: %s' % system_temp_directory)
+  logs.log('Cleared system temp directory: %s' % _system_temp_dir)
 
 
 def clear_testcase_directories():
@@ -195,10 +212,15 @@ def close_open_file_handles_if_needed(path):
                     (handle_executable_path, file_handle_id, process_id))
 
 
-def create_directory_if_needed(directory, create_intermediates=False):
-  """Create a directory, ignore if it already exists."""
+def create_directory(directory, create_intermediates=False, recreate=False):
+  """Creates |directory|. Create intermediate directories if
+  |create_intermediates|. Ignore if it already exists and |recreate| is
+   False."""
   if os.path.exists(directory):
-    return True
+    if recreate:
+      remove_directory(directory)
+    else:
+      return True
 
   try:
     if create_intermediates:
@@ -288,8 +310,8 @@ def get_free_disk_space(path='/'):
   return psutil.disk_usage(path).free
 
 
-def get_interpreter_for_command(command):
-  """Gives the interpreter needed to run the command."""
+def get_interpreter(file_to_execute):
+  """Gives the interpreter needed to execute |file_to_execute|."""
   interpreter_extension_map = {
       '.bash': 'bash',
       '.class': 'java',
@@ -301,9 +323,24 @@ def get_interpreter_for_command(command):
   }
 
   try:
-    return interpreter_extension_map[os.path.splitext(command)[1]]
+    return interpreter_extension_map[os.path.splitext(file_to_execute)[1]]
   except KeyError:
-    return ''
+    return None
+
+
+def get_execute_command(file_to_execute):
+  """Return command to execute |file_to_execute|."""
+  interpreter_path = get_interpreter(file_to_execute)
+
+  # Hack for Java scripts.
+  file_to_execute = file_to_execute.replace('.class', '')
+
+  if interpreter_path:
+    command = '%s %s' % (interpreter_path, file_to_execute)
+  else:
+    # Handle executables that don't need an interpreter.
+    command = file_to_execute
+  return command
 
 
 def move(src, dst):
@@ -372,7 +409,7 @@ def remove_directory(directory, recreate=False, ignore_errors=False):
     This is needed on Windows."""
 
     try:
-      os.chmod(path, 0750)
+      os.chmod(path, 0o750)
     except:
       # If this is tmpfs, we will probably fail.
       pass

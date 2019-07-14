@@ -16,7 +16,9 @@
 # `python butler.py generate_datastore_models`
 # to generate Go structs for the models defined here.
 
+from builtins import object
 import re
+import six
 
 from base import json_utils
 from base import utils
@@ -24,9 +26,6 @@ from datastore import ndb
 from datastore import search_tokenizer
 from metrics import logs
 from system import environment
-
-# Android app extension.
-ANDROID_APP_EXTENSION = '.apk'
 
 # Prefix used when a large testcase is stored in the blobstore.
 BLOBSTORE_STACK_PREFIX = 'BLOB_KEY='
@@ -80,6 +79,9 @@ MIN_ELAPSED_TIME_SINCE_REPORT = 3
 # Valid name check for fuzzer, job, etc.
 NAME_CHECK_REGEX = re.compile(r'^[a-zA-Z0-9_-]+$')
 
+# Regex to match special chars in project name.
+FUZZ_TARGET_SPECIAL_CHARS_REGEX = re.compile('[^a-zA-Z0-9_-]')
+
 # List of supported platforms.
 PLATFORMS = [
     'LINUX',
@@ -95,7 +97,13 @@ PLATFORMS = [
 PUBSUB_REQUEST_LIMIT = 900000
 
 # We store at most 3 stacktraces per Testcase entity (original, second, latest).
-STACKTRACE_LENGTH_LIMIT = ENTITY_SIZE_LIMIT / 3
+STACKTRACE_LENGTH_LIMIT = ENTITY_SIZE_LIMIT // 3
+
+# Maximum size allowed for testcase comments.
+# 1MiB (maximum Datastore entity size) - ENTITY_SIZE_LIMIT (our limited entity
+# size with breathing room), divided by 2 to leave room for other things in the
+# entity. This is around 74KB.
+TESTCASE_COMMENTS_LENGTH_LIMIT = (1024 * 1024 - ENTITY_SIZE_LIMIT) // 2
 
 # Maximum number of testcase entities to query in one batch.
 TESTCASE_ENTITY_QUERY_LIMIT = 256
@@ -108,23 +116,17 @@ NOTIFY_CLOSED_BUG_WITH_OPEN_TESTCASE_DEADLINE = 7
 UNREPRODUCIBLE_TESTCASE_NO_BUG_DEADLINE = 7
 UNREPRODUCIBLE_TESTCASE_WITH_BUG_DEADLINE = 14
 
-# Issue state tracking labels.
-ISSUE_IGNORE_LABEL = 'ClusterFuzz-Ignore'
-ISSUE_INVALID_FUZZER_LABEL = 'ClusterFuzz-Invalid-Fuzzer'
-ISSUE_MISTRIAGED_LABEL = 'ClusterFuzz-Wrong'
-ISSUE_NEEDS_FEEDBACK_LABEL = 'Needs-Feedback'
-ISSUE_VERIFIED_LABEL = 'ClusterFuzz-Verified'
+# Chromium specific issue state tracking labels.
+CHROMIUM_ISSUE_RELEASEBLOCK_BETA_LABEL = 'ReleaseBlock-Beta'
+# TODO(ochang): Find some way to remove these.
+CHROMIUM_ISSUE_PREDATOR_AUTO_CC_LABEL = 'Test-Predator-Auto-CC'
+CHROMIUM_ISSUE_PREDATOR_AUTO_COMPONENTS_LABEL = 'Test-Predator-Auto-Components'
+CHROMIUM_ISSUE_PREDATOR_AUTO_OWNER_LABEL = 'Test-Predator-Auto-Owner'
+CHROMIUM_ISSUE_PREDATOR_WRONG_COMPONENTS_LABEL = (
+    'Test-Predator-Wrong-Components')
+CHROMIUM_ISSUE_PREDATOR_WRONG_CL_LABEL = 'Test-Predator-Wrong-CLs'
 
-ISSUE_FUZZ_BLOCKER_LABEL = 'Fuzz-Blocker'
-ISSUE_RELEASEBLOCK_BETA_LABEL = 'ReleaseBlock-Beta'
-
-ISSUE_CLUSTERFUZZ_AUTO_CC_LABEL = 'ClusterFuzz-Auto-CC'
-
-ISSUE_PREDATOR_AUTO_CC_LABEL = 'Test-Predator-Auto-CC'
-ISSUE_PREDATOR_AUTO_COMPONENTS_LABEL = 'Test-Predator-Auto-Components'
-ISSUE_PREDATOR_AUTO_OWNER_LABEL = 'Test-Predator-Auto-Owner'
-ISSUE_PREDATOR_WRONG_COMPONENTS_LABEL = 'Test-Predator-Wrong-Components'
-ISSUE_PREDATOR_WRONG_CL_LABEL = 'Test-Predator-Wrong-CLs'
+MISSING_VALUE_STRING = '---'
 
 # FIXME: Move these "enums" into seperate file(s).
 
@@ -436,9 +438,6 @@ class Testcase(Model):
   # ASAN redzone size in bytes.
   redzone = ndb.IntegerProperty(default=128, indexed=False)
 
-  # Blobstore key for the video (for interaction gestures).
-  video = ndb.StringProperty(indexed=False)
-
   # Whether testcase is open.
   open = ndb.BooleanProperty(default=True)
 
@@ -536,6 +535,9 @@ class Testcase(Model):
   def is_status_unreproducible(self):
     return self.status and self.status.startswith('Unreproducible')
 
+  def is_crash(self):
+    return bool(self.crash_state)
+
   def populate_indices(self):
     """Populate keywords for fast test case list searching."""
     self.keywords = list(
@@ -551,7 +553,7 @@ class Testcase(Model):
     self.is_a_duplicate_flag = bool(self.duplicate_of)
     fuzzer_name_indices = list(
         set([self.fuzzer_name, self.overridden_fuzzer_name]))
-    self.fuzzer_name_indices = [f.lower() for f in fuzzer_name_indices if f]
+    self.fuzzer_name_indices = [f for f in fuzzer_name_indices if f]
 
     # If the impact task hasn't been run (aka is_impact_set_flag=False) OR
     # if impact isn't applicable (aka has_impacts() is False), we wipe all
@@ -635,6 +637,10 @@ class Testcase(Model):
     if update_testcase:
       self.put()
 
+  def actual_fuzzer_name(self):
+    """Actual fuzzer name, uses one from overridden attribute if available."""
+    return self.overridden_fuzzer_name or self.fuzzer_name
+
 
 class TestcaseGroup(Model):
   """Group for a set of testcases."""
@@ -690,12 +696,6 @@ class Config(Model):
   # Privileged users.
   privileged_users = ndb.TextProperty(default='')
 
-  # Stack blacklist/exclusions.
-  stack_blacklist = ndb.TextProperty(default='')
-
-  # Stacktrace clean regexes.
-  stack_clean_regex = ndb.TextProperty(default='')
-
   # Admin contact string.
   contact_string = ndb.StringProperty(default='')
 
@@ -721,14 +721,21 @@ class Config(Model):
   # testcase details.
   relax_testcase_restrictions = ndb.BooleanProperty(default=False)
 
+  # More relaxed restrictions: allow domain users to access both security and
+  # functional bugs.
+  relax_security_bug_restrictions = ndb.BooleanProperty(default=False)
+
   # Coverage reports bucket.
   coverage_reports_bucket = ndb.StringProperty(default='')
 
   # For GitHub API.
   github_credentials = ndb.StringProperty(default='')
 
-  # OAuth2 client secret for ClusterFuzz tools.
-  clusterfuzz_tools_client_secret = ndb.StringProperty(default='')
+  # OAuth2 client id for the reproduce tool.
+  reproduce_tool_client_id = ndb.StringProperty(default='')
+
+  # OAuth2 client secret for the reproduce tool.
+  reproduce_tool_client_secret = ndb.StringProperty(default='')
 
   # Pub/Sub topics for the Predator service.
   predator_crash_topic = ndb.StringProperty(default='')
@@ -737,6 +744,10 @@ class Config(Model):
   # Wifi connection information.
   wifi_ssid = ndb.StringProperty(default='')
   wifi_password = ndb.StringProperty(default='')
+
+  # SendGrid config.
+  sendgrid_api_key = ndb.StringProperty(default='')
+  sendgrid_sender = ndb.StringProperty(default='')
 
 
 class TestcaseUploadMetadata(Model):
@@ -852,7 +863,7 @@ class Job(Model):
     variables in its template. Avoid using this if possible."""
     environment_string = ''
     job_environment = self.get_environment()
-    for key, value in job_environment.iteritems():
+    for key, value in six.iteritems(job_environment):
       environment_string += '%s = %s\n' % (key, value)
 
     return environment_string
@@ -1030,25 +1041,6 @@ class Lock(Model):
   holder = ndb.StringProperty()
 
 
-class LockStatShard(Model):
-  """Lock statistics shard."""
-  # The number of successful acquires.
-  acquires = ndb.IntegerProperty(default=0)
-
-  # The number of lock acquire bails.
-  bails = ndb.IntegerProperty(default=0)
-
-  # The number of acquire failures.
-  failed_acquires = ndb.IntegerProperty(default=0)
-
-  # The number of times the lock was detected to be lost because the holder ran
-  # out of time.
-  lost = ndb.IntegerProperty(default=0)
-
-  # Total wait time over all successful acquires.
-  wait_time = ndb.IntegerProperty(default=0)
-
-
 class FuzzTarget(Model):
   """Fuzz target."""
   # The engine this target is a child of.
@@ -1081,6 +1073,14 @@ def fuzz_target_fully_qualified_name(engine, project, binary):
 
 def fuzz_target_project_qualified_name(project, binary):
   """Get a fuzz target's project qualified name."""
+
+  def _normalized(name):
+    """Return normalized project name with special chars like slash, colon, etc
+    normalized to hyphen(-). This is important as otherwise these chars break
+    local and cloud storage paths."""
+    return FUZZ_TARGET_SPECIAL_CHARS_REGEX.sub('-', name).strip('-')
+
+  binary = _normalized(binary)
   if not project:
     return binary
 
@@ -1088,11 +1088,11 @@ def fuzz_target_project_qualified_name(project, binary):
     # Don't prefix with project name if it's the default project.
     return binary
 
-  project_prefix = project + '_'
-  if binary.startswith(project_prefix):
+  normalized_project_prefix = _normalized(project) + '_'
+  if binary.startswith(normalized_project_prefix):
     return binary
 
-  return project_prefix + binary
+  return normalized_project_prefix + binary
 
 
 class FuzzTargetJob(Model):
@@ -1117,6 +1117,14 @@ class FuzzTargetJob(Model):
     """Pre-put hook."""
     self.key = ndb.Key(FuzzTargetJob,
                        fuzz_target_job_key(self.fuzz_target_name, self.job))
+
+
+class FuzzStrategyProbability(Model):
+  """Mapping between fuzz strategies and probabilities with which they
+  should be selected."""
+
+  strategy_name = ndb.StringProperty()
+  probability = ndb.FloatProperty()
 
 
 def fuzz_target_job_key(fuzz_target_name, job):
@@ -1227,6 +1235,7 @@ class Trial(Model):
   app_args = ndb.StringProperty(indexed=False)
 
 
+# TODO(ochang): Make this generic.
 class OssFuzzProject(Model):
   """Represents a project that has been set up for OSS-Fuzz."""
   # Name of the project.
@@ -1324,3 +1333,8 @@ class OssFuzzBuildFailure(Model):
 
   # Build type (fuzzing, coverage, etc).
   build_type = ndb.StringProperty()
+
+
+class Admin(Model):
+  """Records an admin user."""
+  email = ndb.StringProperty()

@@ -46,25 +46,26 @@ fi
 # Prerequisite for add-apt-repository.
 sudo apt-get install -y apt-transport-https software-properties-common
 
-# Add needed apt-get repos. Not needed on Goobuntu (rodete).
-if [ "$distro_codename" != "rodete" ]; then
+if [ "$distro_codename" == "rodete" ]; then
+  prodaccess
+  sudo glinux-add-repo docker-ce-"$distro_codename"
+else
   curl -fsSL https://download.docker.com/linux/${distro_id,,}/gpg | \
      sudo apt-key add -
   sudo add-apt-repository -y \
      "deb [arch=amd64] https://download.docker.com/linux/${distro_id,,} \
-     $(lsb_release -cs) \
+     $distro_codename \
      stable"
 
   echo "deb [arch=amd64] http://storage.googleapis.com/bazel-apt stable jdk1.8" \
       | sudo tee /etc/apt/sources.list.d/bazel.list
   curl https://bazel.build/bazel-release.pub.gpg | sudo apt-key add -
 
-  export CLOUD_SDK_REPO="cloud-sdk-$(lsb_release -c -s)"
+  export CLOUD_SDK_REPO="cloud-sdk-$distro_codename"
   echo "deb http://packages.cloud.google.com/apt $CLOUD_SDK_REPO main" | \
       sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
   curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | \
       sudo apt-key add -
-
 fi
 
 # Set java_package so we know which to install.
@@ -89,14 +90,22 @@ sudo apt-get install -y \
     unzip \
     xvfb
 
-# Install patchelf (latest version, also unavailable on 14.04).
-(cd /tmp && \
-    curl -sS https://nixos.org/releases/patchelf/patchelf-0.9/patchelf-0.9.tar.bz2 \
-    | tar -C /tmp -xj && \
-    cd /tmp/patchelf-*/ && \
-    ./configure && \
-    sudo make install && \
-    sudo rm -rf /tmp/patchelf-*)
+# Install patchelf - latest version not available on some older distros so we
+# compile from source.
+# Needed for MemorySanitizer to patch instrumented system libraries into the
+# target binary (using RPATH).
+unsupported_codenames="(trusty|xenial|jessie)"
+if [[ $distro_codename =~ $unsupported_codenames ]]; then
+    (cd /tmp && \
+        curl -sS https://nixos.org/releases/patchelf/patchelf-0.9/patchelf-0.9.tar.bz2 \
+        | tar -C /tmp -xj && \
+        cd /tmp/patchelf-*/ && \
+        ./configure && \
+        sudo make install && \
+        sudo rm -rf /tmp/patchelf-*)
+else
+    sudo apt-get install -y patchelf
+fi
 
 # Setup virtualenv.
 rm -rf ENV

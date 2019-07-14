@@ -25,9 +25,9 @@ from libs import helpers
 class Handler(base_handler.Handler):
   """Manage data bundles."""
 
+  @handler.unsupported_on_local_server
   @handler.check_user_access(need_privileged_access=False)
   @handler.get(handler.HTML)
-  @handler.unsupported_on_local_server
   def get(self):
     """Handle a get request."""
     data_bundles = list(data_types.DataBundle.query().order(
@@ -48,6 +48,7 @@ class CreateHandler(base_handler.Handler):
   """Create a corpus."""
 
   @handler.check_user_access(need_privileged_access=True)
+  @handler.post(handler.FORM, handler.HTML)
   @handler.require_csrf_token
   def post(self):
     """Handle a post request."""
@@ -93,6 +94,7 @@ class DeleteHandler(base_handler.Handler):
   """Delete a corpus."""
 
   @handler.check_user_access(need_privileged_access=True)
+  @handler.post(handler.FORM, handler.HTML)
   @handler.require_csrf_token
   def post(self):
     """Handle a post request."""

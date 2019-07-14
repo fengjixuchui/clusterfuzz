@@ -13,21 +13,23 @@
 # limitations under the License.
 """Minimizer that attempts to use specialized minimizers on different parts of
    an HTML test case."""
+from __future__ import absolute_import
 
+from builtins import object
 import functools
 
-import chunk_minimizer
-import html_tokenizer
-import js_minimizer
-import js_tokenizer
-import minimizer
-import utils
+from . import chunk_minimizer
+from . import html_tokenizer
+from . import js_minimizer
+from . import js_tokenizer
+from . import minimizer
+from . import utils
 
 SCRIPT_START_STRING = '<script'
 SCRIPT_END_STRING = '</script>'
 
 
-class HTMLMinimizer(minimizer.Minimizer):
+class HTMLMinimizer(minimizer.Minimizer):  # pylint:disable=abstract-method
   """Specialized HTML minimizer.
 
      Note that this will not work properly with normal tokenizers. It simply

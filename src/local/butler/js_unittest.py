@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """js_unittest.py runs JS tests under src/appengine"""
+from __future__ import print_function
 
 import os
 import re
@@ -19,6 +20,8 @@ import sys
 import time
 
 from selenium import webdriver
+
+from local.butler import common
 
 _SUITE_SEPARATOR = '=' * 80
 _TEST_SEPARATOR = '-' * 80
@@ -61,13 +64,21 @@ def execute(args):
 
      1. Execute the HTML with chromedriver.
      2. Read the test result from the HTML."""
-
   test_filepath = os.path.join('src', 'appengine', 'private', 'test.html')
-  print 'Running chromedriver on %s' % test_filepath
+  print('Running chromedriver on %s' % test_filepath)
 
-  options = webdriver.ChromeOptions()
-  options.add_argument('--allow-file-access-from-files')
-  driver = webdriver.Chrome(chrome_options=options)
+  chrome_options = webdriver.ChromeOptions()
+  chrome_options.add_argument('--allow-file-access-from-files')
+
+  is_ci = os.getenv('TEST_BOT_ENVIRONMENT')
+  if is_ci:
+    # Turn off sandbox since running under root, with trusted tests.
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--headless')
+
+  driver = webdriver.Chrome(
+      executable_path=common.get_chromedriver_path(),
+      chrome_options=chrome_options)
 
   try:
     driver.get('file://%s' % os.path.abspath(test_filepath))
@@ -98,19 +109,21 @@ def execute(args):
     error_report = _parse_error_report(driver)
 
     if error_report:
-      print error_report
+      print(error_report)
 
-    print
-    print _SUITE_SEPARATOR
-    print 'Test results:'
-    print '| Success: %d' % success_count
-    print '| Failure: %d' % failure_count
-    print _SUITE_SEPARATOR
-    print
+    print()
+    print(_SUITE_SEPARATOR)
+    print('Test results:')
+    print('| Success: %d' % success_count)
+    print('| Failure: %d' % failure_count)
+    print(_SUITE_SEPARATOR)
+    print()
 
     if args.persist:
-      raw_input('--persist is used. Leave the browser open.'
-                ' Press ENTER to close it:')
+      # pylint: disable=eval-used
+      eval(
+          input('--persist is used. Leave the browser open.'
+                ' Press ENTER to close it:'))
   finally:
     driver.quit()
 

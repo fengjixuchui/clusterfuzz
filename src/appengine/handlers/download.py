@@ -13,18 +13,20 @@
 # limitations under the License.
 """Download files from GCS."""
 
+from future import standard_library
+standard_library.install_aliases()
 import os
-import urllib2
+import urllib.parse
 
 from base import errors
 from base import utils
 from datastore import data_handler
 from google_cloud_utils import blobs
 from handlers import base_handler
-from issue_management import issue_tracker_utils
 from libs import access
 from libs import gcs
 from libs import helpers
+from libs.issue_management import issue_tracker_utils
 
 
 class Handler(base_handler.Handler, gcs.SignedGcsHandler):
@@ -65,14 +67,14 @@ class Handler(base_handler.Handler, gcs.SignedGcsHandler):
     if not testcase.bug_information:
       return False
 
-    itm = issue_tracker_utils.get_issue_tracker_manager(testcase)
-    issue = itm.get_issue(int(testcase.bug_information))
+    issue_tracker = issue_tracker_utils.get_issue_tracker_for_testcase(testcase)
+    issue = issue_tracker.get_issue(testcase.bug_information)
     if not issue:
       return False
 
     # If the issue is explicitly marked as view restricted to committers only
     # (OSS-Fuzz only), then don't allow public download.
-    if issue.has_label('restrict-view-commit'):
+    if 'restrict-view-commit' in issue.labels:
       return False
 
     self._send_blob(
@@ -106,7 +108,7 @@ class Handler(base_handler.Handler, gcs.SignedGcsHandler):
     if testcase:
       fuzzer_binary_name = testcase.get_metadata('fuzzer_binary_name')
 
-    resource = str(urllib2.unquote(resource))
+    resource = str(urllib.parse.unquote(resource))
     blob_info = blobs.get_blob_info(resource)
     if not blob_info:
       raise helpers.EarlyExitException('File does not exist.', 400)

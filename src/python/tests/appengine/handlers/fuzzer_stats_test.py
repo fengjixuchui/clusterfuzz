@@ -190,6 +190,17 @@ class TestBuildResults(unittest.TestCase):
     self.assertDictEqual(
         ast.literal_eval(_read_data_file('by_day_expected.txt')), result)
 
+  def test_build_by_job(self):
+    """Tests basic build_results with valid parameters (group by job)."""
+    build_args = [
+        'testFuzzer_1_fuzzer', None, 'by-job', '2016-10-20', '2016-10-21'
+    ]
+    self.client.raw_query.return_value = _mock_query(*build_args)
+    result = fuzzer_stats.build_results(*build_args)
+
+    self.assertDictEqual(
+        ast.literal_eval(_read_data_file('by_job_expected.txt')), result)
+
   def test_build_by_time(self):
     """Tests basic build_results with valid parameters (group by time)."""
     build_args = [
@@ -264,8 +275,8 @@ class TestPermissions(unittest.TestCase):
 
   def setUp(self):
     test_helpers.patch(self, [
-        'google.appengine.api.users.is_current_user_admin',
-        'google.appengine.api.users.get_current_user',
+        'libs.auth.get_current_user',
+        'libs.auth.is_current_user_admin',
         'handlers.fuzzer_stats.build_results',
     ])
 
@@ -325,7 +336,7 @@ class TestPermissions(unittest.TestCase):
   def test_external_user_with_job(self):
     """Test external user access (job specified)."""
     self.mock.is_current_user_admin.return_value = False
-    self.mock.get_current_user().email.return_value = 'test@user.com'
+    self.mock.get_current_user().email = 'test@user.com'
 
     response = self.app.post_json(
         '/fuzzer-stats/load', {
@@ -361,7 +372,7 @@ class TestPermissions(unittest.TestCase):
   def test_external_user_without_job(self):
     """Test external user access (no job specified)."""
     self.mock.is_current_user_admin.return_value = False
-    self.mock.get_current_user().email.return_value = 'test@user.com'
+    self.mock.get_current_user().email = 'test@user.com'
 
     response = self.app.post_json(
         '/fuzzer-stats/load', {

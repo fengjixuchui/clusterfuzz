@@ -13,7 +13,9 @@
 # limitations under the License.
 """Tests for the http_server module."""
 
+from builtins import object
 import os
+import six
 import unittest
 
 from pyfakefs import fake_filesystem_unittest
@@ -34,15 +36,15 @@ class TestRequestHandler(http_server.RequestHandler):
     def write(self, data):
       self.contents += data
 
-  def __init__(self, path):
+  def __init__(self, path):  # pylint: disable=super-init-not-called
     self.response_code = 0
     self.wfile = self.TestWFile()
     self.path = path
 
-  def send_response(self, response_code, _=None):
+  def send_response(self, response_code, _=None):  # pylint: disable=arguments-differ
     self.response_code = response_code
 
-  def send_header(self, *_):
+  def send_header(self, *_):  # pylint: disable=arguments-differ
     pass
 
   def end_headers(self):
@@ -68,7 +70,7 @@ class RequestHandlerTest(fake_filesystem_unittest.TestCase):
   def test_nonexistent_file(self):
     """Ensure that we respond with 404 for a nonexistent file."""
     handler = TestRequestHandler('/invalid.txt')
-    handler.do_get()
+    handler.do_GET()
 
     self.assertEqual(handler.response_code, 404)
     self.assertEqual(handler.wfile.contents, '')
@@ -76,7 +78,7 @@ class RequestHandlerTest(fake_filesystem_unittest.TestCase):
   def test_unreadable_file(self):
     """Ensure that we respond with 403 for a file we can't read."""
     handler = TestRequestHandler('/unreadable.txt')
-    handler.do_get()
+    handler.do_GET()
 
     self.assertEqual(handler.response_code, 403)
     self.assertEqual(handler.wfile.contents, '')
@@ -84,7 +86,7 @@ class RequestHandlerTest(fake_filesystem_unittest.TestCase):
   def test_valid_file(self):
     """Ensure that we respond with 200 and the file contents for a valid one."""
     handler = TestRequestHandler('/valid.txt')
-    handler.do_get()
+    handler.do_GET()
 
     self.assertEqual(handler.response_code, 200)
     self.assertEqual(handler.wfile.contents, 'valid file')
@@ -100,7 +102,7 @@ class GuessMimeTypeTest(unittest.TestCase):
         'file.css': 'text/css',
         'file.jpg': 'image/jpeg',
     }
-    for filename, expected_value in expected_types_map.iteritems():
+    for filename, expected_value in six.iteritems(expected_types_map):
       self.assertEqual(http_server.guess_mime_type(filename), expected_value)
 
   def test_invalid_type(self):

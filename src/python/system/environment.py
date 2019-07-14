@@ -13,13 +13,20 @@
 # limitations under the License.
 """Environment functions."""
 
+from builtins import range
 import ast
 import functools
 import os
 import re
+import six
 import socket
 import sys
 import yaml
+
+try:
+  from shlex import quote
+except ImportError:
+  from pipes import quote
 
 # Tools supporting customization of options via ADDITIONAL_{TOOL_NAME}_OPTIONS.
 # FIXME: Support ADDITIONAL_UBSAN_OPTIONS and ADDITIONAL_LSAN_OPTIONS in an
@@ -58,7 +65,7 @@ def _join_memory_tool_options(options):
   """Joins a dict holding memory tool options into a string that can be set in
   the environment."""
   return ':'.join(
-      '%s=%s' % (key, str(value)) for key, value in options.iteritems())
+      '%s=%s' % (key, str(value)) for key, value in six.iteritems(options))
 
 
 def _maybe_convert_to_int(value):
@@ -138,8 +145,8 @@ def get_asan_options(redzone_size, malloc_context_size, quarantine_size_mb,
   if malloc_context_size:
     asan_options['malloc_context_size'] = malloc_context_size
 
-  # Set quarantine size if different than the 256 mb default.
-  if quarantine_size_mb != 256 and bot_platform != 'ANDROID':
+  # Set quarantine size.
+  if quarantine_size_mb:
     asan_options['quarantine_size_mb'] = quarantine_size_mb
 
   # Test for leaks if this is an LSan-enabled job type.
@@ -151,23 +158,13 @@ def get_asan_options(redzone_size, malloc_context_size, quarantine_size_mb,
     remove_key('LSAN_OPTIONS')
     asan_options['detect_leaks'] = 0
 
-  # FIXME: Support container overflow on all platforms.
-  if bot_platform == 'LINUX':
-    asan_options['detect_container_overflow'] = 1
-  else:
-    # Broken on multiple platforms. E.g. Android tracked in b/25228125.
+  # FIXME: Support container overflow on Android.
+  if bot_platform == 'ANDROID':
     asan_options['detect_container_overflow'] = 0
 
-  # Stack use-after-return.
-  # FIXME: Support Stack UAR on all platforms.
-  if (bot_platform in ['LINUX', 'MAC'] and
-      'detect_stack_use_after_return=' not in asan_options):
-    max_uar_stack_size_log = 16
-    asan_options['detect_stack_use_after_return'] = 1
-    asan_options['max_uar_stack_size_log'] = max_uar_stack_size_log
-  elif bot_platform == 'WINDOWS':
-    # FIXME: See crbug.com/915245. Disable this explicitly on Windows.
-    asan_options['detect_stack_use_after_return'] = 0
+  # Enable stack use-after-return.
+  asan_options['detect_stack_use_after_return'] = 1
+  asan_options['max_uar_stack_size_log'] = 16
 
   # Other less important default options for all cases.
   asan_options.update({
@@ -211,7 +208,7 @@ def get_cpu_arch():
   if platform() == 'ANDROID':
     # FIXME: Handle this import in a cleaner way.
     from platforms import android
-    return android.device.get_cpu_arch()
+    return android.settings.get_cpu_arch()
 
   # FIXME: Add support for desktop architectures as needed.
   return None
@@ -283,21 +280,21 @@ def get_environment_settings_as_string():
     # FIXME: Handle this import in a cleaner way.
     from platforms import android
 
-    environment_string += '[Environment] Build fingerprint = %s\n' % (
+    environment_string += '[Environment] Build fingerprint: %s\n' % (
         get_value('BUILD_FINGERPRINT'))
 
     environment_string += ('[Environment] Patch level: %s\n' %
-                           android.device.get_security_patch_level())
+                           android.settings.get_security_patch_level())
 
     environment_string += (
-        '[Environment] Local properties file = %s with contents:\n%s\n' %
+        '[Environment] Local properties file "%s" with contents:\n%s\n' %
         (android.device.LOCAL_PROP_PATH,
          android.adb.read_data_from_file(android.device.LOCAL_PROP_PATH)))
 
     command_line = get_value('COMMAND_LINE_PATH')
     if command_line:
       environment_string += (
-          '[Environment] Command line file = %s with contents:\n%s\n' %
+          '[Environment] Command line file "%s" with contents:\n%s\n' %
           (command_line, android.adb.read_data_from_file(command_line)))
 
     asan_options = get_value('ASAN_OPTIONS')
@@ -306,9 +303,9 @@ def get_environment_settings_as_string():
       # asan_device_setup.sh and we send this options file path as an include
       # to extra-options parameter.
       sanitizer_options_file_path = (
-          android.device.get_sanitizer_options_file_path('ASAN'))
+          android.sanitizer.get_options_file_path('ASAN'))
       environment_string += (
-          '[Environment] ASAN Options file = %s with contents %s \n' %
+          '[Environment] ASAN options file "%s" with contents:\n%s\n' %
           (sanitizer_options_file_path, asan_options))
 
   else:
@@ -319,8 +316,8 @@ def get_environment_settings_as_string():
       if not environment_variable_value:
         continue
 
-      environment_string += '[Environment] %s = %s\n' % (
-          environment_variable, environment_variable_value)
+      environment_string += '[Environment] %s="%s"\n' % (
+          environment_variable, quote(environment_variable_value))
 
   return environment_string
 
@@ -340,7 +337,7 @@ def get_llvm_symbolizer_path():
     return None
 
   # Make sure that llvm symbolizer binary is executable.
-  os.chmod(llvm_symbolizer_path, 0750)
+  os.chmod(llvm_symbolizer_path, 0o750)
   return llvm_symbolizer_path
 
 
@@ -446,7 +443,7 @@ def get_platform_id():
     # FIXME: Handle this import in a cleaner way.
     from platforms import android
 
-    platform_id = get_value('PLATFORM_ID', android.device.get_platform_id())
+    platform_id = get_value('PLATFORM_ID', android.settings.get_platform_id())
     return platform_id.lower()
 
   return bot_platform.lower()
@@ -712,9 +709,8 @@ def set_environment_parameters_from_file(file_path):
   if not os.path.exists(file_path):
     return
 
-  f = open(file_path, 'r')
-  file_data = f.read()
-  f.close()
+  with open(file_path, 'r') as f:
+    file_data = f.read()
 
   for line in file_data.splitlines():
     if line.startswith('#') or not line.strip():
@@ -746,10 +742,6 @@ def reset_current_memory_tool_options(redzone_size=0,
   set_value('MEMORY_TOOL', tool_name)
 
   bot_platform = platform()
-
-  # Get default quarantine size from environment (if not provided already).
-  if quarantine_size_mb is None:
-    quarantine_size_mb = get_value('QUARANTINE_SIZE_MB', 256)
 
   # Default options for memory debuggin tool used.
   if tool_name == 'ASAN':
@@ -786,8 +778,7 @@ def reset_current_memory_tool_options(redzone_size=0,
 
   # For Android, we need to set shell property |asan.options|.
   if bot_platform == 'ANDROID':
-    android.device.set_sanitizer_options_if_needed(tool_name,
-                                                   joined_tool_options)
+    android.sanitizer.set_options(tool_name, joined_tool_options)
 
 
 def set_default_vars():
@@ -797,7 +788,7 @@ def set_default_vars():
     env_file_contents = file_handle.read()
 
   env_vars_and_values = yaml.safe_load(env_file_contents)
-  for variable, value in env_vars_and_values.iteritems():
+  for variable, value in six.iteritems(env_vars_and_values):
     # We cannot call set_value here.
     os.environ[variable] = str(value)
 
@@ -826,6 +817,7 @@ def set_bot_environment():
   os.environ['BUILD_URLS_DIR'] = os.path.join(bot_dir, 'build-urls')
   os.environ['LOG_DIR'] = os.path.join(bot_dir, 'logs')
   os.environ['CACHE_DIR'] = os.path.join(bot_dir, 'cache')
+  os.environ['RESOURCES_DIR'] = os.path.join(bot_dir, 'resources')
 
   inputs_dir = os.path.join(bot_dir, 'inputs')
   os.environ['INPUT_DIR'] = inputs_dir
@@ -836,6 +828,8 @@ def set_bot_environment():
   os.environ['FUZZ_INPUTS_MEMORY'] = os.environ['FUZZ_INPUTS']
   os.environ['FUZZ_INPUTS_DISK'] = os.path.join(inputs_dir,
                                                 'fuzzer-testcases-disk')
+  os.environ['MUTATOR_PLUGINS_DIR'] = os.path.join(inputs_dir,
+                                                   'mutator-plugins')
   os.environ['FUZZ_DATA'] = os.path.join(inputs_dir,
                                          'fuzzer-common-data-bundles')
   os.environ['IMAGES_DIR'] = os.path.join(inputs_dir, 'images')
@@ -870,7 +864,7 @@ def set_tsan_max_history_size():
     return
 
   tsan_max_history_size = 7
-  for i in xrange(tsan_max_history_size):
+  for i in range(tsan_max_history_size):
     tsan_options = (
         tsan_options.replace('history_size=%d' % i,
                              'history_size=%d' % tsan_max_history_size))

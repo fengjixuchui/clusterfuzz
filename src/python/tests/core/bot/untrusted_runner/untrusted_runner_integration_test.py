@@ -16,6 +16,7 @@
 import filecmp
 import os
 import shutil
+import six
 import subprocess
 import tempfile
 
@@ -30,7 +31,7 @@ from bot.untrusted_runner import remote_process_host
 from bot.untrusted_runner import symbolize_host
 from build_management import build_manager
 from datastore import data_types
-from fuzzing import tests
+from fuzzing import testcase_manager
 from google_cloud_utils import blobs
 from system import environment
 from system import process_handler
@@ -40,7 +41,9 @@ from tests.test_libs import untrusted_runner_helpers
 
 TEST_FILE_CONTENTS = ('A' * config.FILE_TRANSFER_CHUNK_SIZE +
                       'B' * config.FILE_TRANSFER_CHUNK_SIZE +
-                      'C' * (config.FILE_TRANSFER_CHUNK_SIZE / 2))
+                      'C' * (config.FILE_TRANSFER_CHUNK_SIZE // 2))
+
+TEST_BUNDLE_BUCKET = 'clusterfuzz-test-bundle'
 
 
 def _dirs_equal(dircmp):
@@ -48,7 +51,7 @@ def _dirs_equal(dircmp):
     return False
 
   return all(
-      _dirs_equal(sub_dircmp) for sub_dircmp in dircmp.subdirs.itervalues())
+      _dirs_equal(sub_dircmp) for sub_dircmp in six.itervalues(dircmp.subdirs))
 
 
 class UntrustedRunnerIntegrationTest(
@@ -451,7 +454,8 @@ class UntrustedRunnerIntegrationTest(
     file_to_run = os.path.join(fuzz_inputs, 'file_to_run')
 
     os.environ['APP_ARGS'] = '%TESTCASE% %TESTCASE_FILE_URL%'
-    command_line = tests.get_command_line_for_application(file_to_run)
+    command_line = testcase_manager.get_command_line_for_application(
+        file_to_run)
 
     app_path = os.environ['APP_PATH']
     worker_fuzz_inputs = file_host.rebase_to_worker_root(fuzz_inputs)
@@ -464,7 +468,8 @@ class UntrustedRunnerIntegrationTest(
 
     launcher_path = '/path/to/launcher'
     os.environ['LAUNCHER_PATH'] = launcher_path
-    command_line = tests.get_command_line_for_application(file_to_run)
+    command_line = testcase_manager.get_command_line_for_application(
+        file_to_run)
     self.assertEqual(
         command_line,
         '%s %s %s %s' % (launcher_path, app_path, file_to_run, file_to_run))
@@ -507,7 +512,7 @@ class UntrustedRunnerIntegrationTest(
 
   def test_update_data_bundle(self):
     """Test update_data_bundle."""
-    self.mock.get_data_bundle_bucket_name.return_value = 'cf_test_bundle'
+    self.mock.get_data_bundle_bucket_name.return_value = TEST_BUNDLE_BUCKET
     fuzzer = data_types.Fuzzer.query(data_types.Fuzzer.name == 'fuzzer').get()
     bundle = data_types.DataBundle.query(
         data_types.DataBundle.name == 'bundle').get()

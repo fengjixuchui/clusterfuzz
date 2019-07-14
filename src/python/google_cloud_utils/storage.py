@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Functions for managing Google Cloud Storage."""
+from __future__ import absolute_import
 
+from builtins import object
+from past.builtins import basestring
 import copy
 import datetime
 import json
@@ -24,7 +27,7 @@ import time
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-import credentials
+from . import credentials
 
 from base import retry
 from base import utils
@@ -137,6 +140,13 @@ class StorageProvider(object):
 class GcsProvider(StorageProvider):
   """GCS storage provider."""
 
+  def _chunk_size(self):
+    if environment.is_running_on_app_engine():
+      # To match App Engine URLFetch's request size limit.
+      return 10 * 1024 * 1024  # 10 MiB.
+
+    return None
+
   def create_bucket(self, name, object_lifecycle, cors):
     """Create a new bucket."""
     project_id = utils.get_application_id()
@@ -193,7 +203,7 @@ class GcsProvider(StorageProvider):
 
     try:
       bucket = client.bucket(bucket_name)
-      blob = bucket.blob(path)
+      blob = bucket.blob(path, chunk_size=self._chunk_size())
       blob.download_to_filename(local_path)
     except google.cloud.exceptions.GoogleCloudError:
       logs.log_error('Failed to copy cloud storage file %s to local file %s.' %
@@ -209,7 +219,7 @@ class GcsProvider(StorageProvider):
 
     try:
       bucket = client.bucket(bucket_name)
-      blob = bucket.blob(path)
+      blob = bucket.blob(path, chunk_size=self._chunk_size())
       if metadata:
         blob.metadata = metadata
 
@@ -250,7 +260,7 @@ class GcsProvider(StorageProvider):
     client = _storage_client()
     try:
       bucket = client.bucket(bucket_name)
-      blob = bucket.blob(path)
+      blob = bucket.blob(path, chunk_size=self._chunk_size())
       return blob.download_as_string()
     except google.cloud.exceptions.GoogleCloudError:
       logs.log_error('Failed to read cloud storage file %s.' % remote_path)
@@ -263,7 +273,7 @@ class GcsProvider(StorageProvider):
 
     try:
       bucket = client.bucket(bucket_name)
-      blob = bucket.blob(path)
+      blob = bucket.blob(path, chunk_size=self._chunk_size())
       if metadata:
         blob.metadata = metadata
       blob.upload_from_string(data)
@@ -374,8 +384,7 @@ class FileSystemProvider(StorageProvider):
           'Bucket {bucket} does not exist.'.format(bucket=bucket))
 
     fs_path = self._fs_path(bucket, path, directory)
-    shell.create_directory_if_needed(
-        os.path.dirname(fs_path), create_intermediates=True)
+    shell.create_directory(os.path.dirname(fs_path), create_intermediates=True)
 
     return fs_path
 
@@ -510,6 +519,7 @@ class GcsBlobInfo(object):
     try:
       return GcsBlobInfo(blobs_bucket(), key)
     except Exception:
+      logs.log_error('Failed to get blob from key %s.' % key)
       return None
 
   @staticmethod
@@ -949,13 +959,18 @@ def store_file_in_cache(file_path,
     # No NFS, nothing to store in cache.
     return
 
+  # If NFS server is not available due to heavy load, skip storage operation
+  # altogether as we would fail to store file.
+  if not os.path.exists(os.path.join(nfs_root, '.')):  # Use . to iterate mount.
+    logs.log_warn('Cache %s not available.' % nfs_root)
+    return
+
   cache_file_path = get_cache_file_path(file_path)
   cache_directory = os.path.dirname(cache_file_path)
   filename = os.path.basename(file_path)
 
   if not os.path.exists(cache_directory):
-    if not shell.create_directory_if_needed(
-        cache_directory, create_intermediates=True):
+    if not shell.create_directory(cache_directory, create_intermediates=True):
       logs.log_error('Failed to create cache directory %s.' % cache_directory)
       return
 
@@ -1078,9 +1093,9 @@ def get_object_size(cloud_storage_file_path):
 def blobs_bucket():
   """Get the blobs bucket name."""
   # Allow tests to override blobs bucket name safely.
-  blobs_bucket_for_testing = environment.get_value('BLOBS_BUCKET_FOR_TESTING')
-  if blobs_bucket_for_testing:
-    return blobs_bucket_for_testing
+  test_blobs_bucket = environment.get_value('TEST_BLOBS_BUCKET')
+  if test_blobs_bucket:
+    return test_blobs_bucket
 
   assert not environment.get_value('PY_UNITTESTS')
   return local_config.ProjectConfig().get('blobs.bucket')

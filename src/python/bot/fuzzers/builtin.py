@@ -13,6 +13,8 @@
 # limitations under the License.
 """Builtin fuzzer."""
 
+from builtins import object
+from builtins import range
 import os
 import random
 import sys
@@ -21,8 +23,9 @@ from base import utils
 from bot.fuzzers import engine_common
 from bot.fuzzers import utils as fuzzers_utils
 from datastore import data_types
-from fuzzing import tests
+from fuzzing import testcase_manager
 from system import environment
+from system import shell
 
 
 class BuiltinFuzzerResult(object):
@@ -51,6 +54,22 @@ class BuiltinFuzzer(object):
         os.path.dirname(sys.modules[self.__module__].__file__))
 
 
+def get_corpus_directory(input_directory, project_qualified_name):
+  """Get the corpus directory given a project qualified fuzz target name."""
+  corpus_directory = os.path.join(input_directory, project_qualified_name)
+  if environment.is_trusted_host():
+    from bot.untrusted_runner import file_host
+    corpus_directory = file_host.rebase_to_worker_root(corpus_directory)
+
+  # Create corpus directory if it does not exist already.
+  if environment.is_trusted_host():
+    from bot.untrusted_runner import file_host
+    file_host.create_directory(corpus_directory, create_intermediates=True)
+  else:
+    shell.create_directory(corpus_directory)
+  return corpus_directory
+
+
 class EngineFuzzer(BuiltinFuzzer):
   """Builtin fuzzer for fuzzing engines such as libFuzzer."""
 
@@ -58,8 +77,13 @@ class EngineFuzzer(BuiltinFuzzer):
     """Generate arguments for the given fuzzer."""
     raise NotImplementedError
 
-  def run(self, input_directory, output_directory, no_of_files):
-    """Run the fuzzer to generate testcases."""
+  def _get_fuzzer_binary_name_and_path(self):
+    """Returns the fuzzer binary name and its path."""
+    # Fuchsia doesn't use file paths to call fuzzers, just the name of the
+    # fuzzer, so we set both from FUZZ_TARGET here.
+    if environment.platform() == 'FUCHSIA':
+      fuzzer_binary_name = fuzzer_path = environment.get_value('FUZZ_TARGET')
+      return fuzzer_binary_name, fuzzer_path
     build_directory = environment.get_value('BUILD_DIR')
 
     if not build_directory:
@@ -77,37 +101,32 @@ class EngineFuzzer(BuiltinFuzzer):
     else:
       fuzzer_path = random.SystemRandom().choice(fuzzers)
       fuzzer_binary_name = os.path.basename(fuzzer_path)
+    return fuzzer_binary_name, fuzzer_path
+
+  def run(self, input_directory, output_directory, no_of_files):
+    """Run the fuzzer to generate testcases."""
+
+    fuzzer_binary_name, fuzzer_path = self._get_fuzzer_binary_name_and_path()
 
     project_qualified_name = data_types.fuzz_target_project_qualified_name(
         utils.current_project(), fuzzer_binary_name)
 
-    corpus_directory = os.path.join(input_directory, project_qualified_name)
-    if environment.is_trusted_host():
-      from bot.untrusted_runner import file_host
-      corpus_directory = file_host.rebase_to_worker_root(corpus_directory)
-
     arguments = self.generate_arguments(fuzzer_path)
-
-    # Create corpus directory if it does not exist already.
-    if environment.is_trusted_host():
-      from bot.untrusted_runner import file_host
-      file_host.create_directory(corpus_directory, create_intermediates=True)
-    else:
-      if not os.path.exists(corpus_directory):
-        os.mkdir(corpus_directory)
+    corpus_directory = get_corpus_directory(input_directory,
+                                            project_qualified_name)
 
     # Create fuzz testcases.
-    for i in xrange(no_of_files):
+    for i in range(no_of_files):
       # Contents of testcase file don't matter at this point. Need to create
       # something non-null so that it is not ignored.
-      testcase_file_path = os.path.join(output_directory,
-                                        '%s%d' % (tests.FUZZ_PREFIX, i))
+      testcase_file_path = os.path.join(
+          output_directory, '%s%d' % (testcase_manager.FUZZ_PREFIX, i))
       utils.write_data_to_file(' ', testcase_file_path)
 
       # Write the flags file containing command line for running launcher
       # script.
-      flags_file_path = os.path.join(output_directory,
-                                     '%s%d' % (tests.FLAGS_PREFIX, i))
+      flags_file_path = os.path.join(
+          output_directory, '%s%d' % (testcase_manager.FLAGS_PREFIX, i))
       flags = ['%TESTCASE%', fuzzer_binary_name]
       if arguments:
         flags.append(arguments)

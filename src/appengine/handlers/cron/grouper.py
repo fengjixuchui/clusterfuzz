@@ -12,15 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Grouper for grouping similar looking testcases."""
+from __future__ import absolute_import
+
+from builtins import object
+import six
 
 from base import errors
 from crash_analysis.crash_comparer import CrashComparer
 from datastore import data_handler
 from datastore import data_types
-from issue_management import issue_tracker_utils
+from libs.issue_management import issue_tracker_utils
 from metrics import logs
 
-import group_leader
+from . import group_leader
 
 FORWARDED_ATTRIBUTES = ('crash_state', 'crash_type', 'group_id',
                         'one_time_crasher_flag', 'project_name',
@@ -71,7 +75,7 @@ def combine_testcases_into_group(testcase_1, testcase_2, testcase_map):
   # together and reuse one of their group ids.
   group_id_to_reuse = testcase_1.group_id
   group_id_to_move = testcase_2.group_id
-  for testcase in testcase_map.itervalues():
+  for testcase in six.itervalues(testcase_map):
     if testcase.group_id == group_id_to_move:
       testcase.group_id = group_id_to_reuse
 
@@ -99,7 +103,13 @@ def group_testcases():
     # Remove duplicates early on to avoid large groups.
     if (not testcase.bug_information and not testcase.uploader_email and
         has_testcase_with_same_params(testcase, testcase_map)):
+      logs.log('Deleting duplicate testcase %d.' % testcase_id)
       testcase.key.delete()
+      continue
+
+    # Wait for minimization to finish as this might change crash params such
+    # as type and may mark it as duplicate / closed.
+    if not testcase.minimized_keys:
       continue
 
     # Store needed testcase attributes into |testcase_map|.
@@ -119,14 +129,14 @@ def group_testcases():
         testcase_attributes.issue_id = (
             cached_issue_map[project_name][issue_id])
       else:
-        issue_tracker_manager = issue_tracker_utils.get_issue_tracker_manager(
-            testcase=testcase, use_cache=True)
-        if not issue_tracker_manager:
+        issue_tracker = issue_tracker_utils.get_issue_tracker_for_testcase(
+            testcase)
+        if not issue_tracker:
           continue
 
         # Determine the original issue id traversing the list of duplicates.
         try:
-          issue = issue_tracker_manager.get_original_issue(issue_id)
+          issue = issue_tracker.get_original_issue(issue_id)
           original_issue_id = issue.id
         except:
           # If we are unable to access the issue, then we can't determine
@@ -164,7 +174,7 @@ def group_testcases():
     updated_group_id_count = 0
     updated_group_bug_information = 0
     if updated_group_id:
-      for other_testcase in testcase_map.itervalues():
+      for other_testcase in six.itervalues(testcase_map):
         if other_testcase.group_id != updated_group_id:
           continue
         updated_group_id_count += 1
@@ -217,8 +227,8 @@ def group_testcases():
 
 def group_testcases_with_same_issues(testcase_map):
   """Group testcases that are associated with same underlying issue."""
-  for testcase_1_id, testcase_1 in testcase_map.iteritems():
-    for testcase_2_id, testcase_2 in testcase_map.iteritems():
+  for testcase_1_id, testcase_1 in six.iteritems(testcase_map):
+    for testcase_2_id, testcase_2 in six.iteritems(testcase_map):
       # Rule: Don't group the same testcase and use different combinations for
       # comparisons.
       if testcase_1_id <= testcase_2_id:
@@ -245,8 +255,8 @@ def group_testcases_with_same_issues(testcase_map):
 
 def group_testcases_with_similar_states(testcase_map):
   """Group testcases with similar looking crash states."""
-  for testcase_1_id, testcase_1 in testcase_map.iteritems():
-    for testcase_2_id, testcase_2 in testcase_map.iteritems():
+  for testcase_1_id, testcase_1 in six.iteritems(testcase_map):
+    for testcase_2_id, testcase_2 in six.iteritems(testcase_map):
       # Rule: Don't group the same testcase and use different combinations for
       # comparisons.
       if testcase_1_id <= testcase_2_id:

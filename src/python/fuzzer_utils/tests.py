@@ -17,7 +17,7 @@ import os
 import random
 
 from base import utils
-from fuzzing import tests
+from fuzzing import testcase_manager
 from metrics import logs
 
 # FIXME: Importing data_handler module is heavyweight and
@@ -34,9 +34,8 @@ def create_testcase_list_file(testcase_file_paths, input_directory):
     return
 
   bot_testcases_file_path = utils.get_bot_testcases_file_path(input_directory)
-  bot_testcases_file_handle = open(bot_testcases_file_path, 'wb')
-  bot_testcases_file_handle.write('\n'.join(testcase_file_paths))
-  bot_testcases_file_handle.close()
+  with open(bot_testcases_file_path, 'wb') as bot_testcases_file_handle:
+    bot_testcases_file_handle.write('\n'.join(testcase_file_paths))
 
 
 def is_valid_testcase_file(file_path,
@@ -62,14 +61,13 @@ def get_random_testcases(input_directory, max_testcases):
 
 def get_testcases(input_directory):
   """Returns list of testcase files."""
-  testcase_list_file_path = os.path.join(input_directory,
-                                         tests.TESTCASE_LIST_FILENAME)
+  testcase_list_file_path = os.path.join(
+      input_directory, testcase_manager.TESTCASE_LIST_FILENAME)
   if not os.path.exists(testcase_list_file_path):
     return []
 
-  testcase_list_file_handle = open(testcase_list_file_path, 'rb')
-  testcase_relative_file_paths = testcase_list_file_handle.read().splitlines()
-  testcase_list_file_handle.close()
+  with open(testcase_list_file_path, 'rb') as testcase_list_file_handle:
+    testcase_relative_file_paths = testcase_list_file_handle.read().splitlines()
 
   testcase_file_paths = []
   for testcase_relative_file_path in testcase_relative_file_paths:

@@ -114,16 +114,21 @@ class Handler(base_handler.Handler):
     github_credentials = self.request.get('github_credentials')
     platform_group_mappings = self.request.get('platform_group_mappings')
     privileged_users = self.request.get('privileged_users')
+    relax_security_bug_restrictions = self.request.get(
+        'relax_security_bug_restrictions')
     relax_testcase_restrictions = self.request.get(
         'relax_testcase_restrictions')
+    reproduce_tool_client_id = self.request.get('reproduce_tool_client_id')
+    reproduce_tool_client_secret = self.request.get(
+        'reproduce_tool_client_secret')
     reproduction_help_url = self.request.get('reproduction_help_url')
     revision_vars_url = self.request.get('revision_vars_url')
-    stack_blacklist = self.request.get('stack_blacklist')
-    stack_clean_regex = self.request.get('stack_clean_regex')
     test_account_email = self.request.get('test_account_email')
     test_account_password = self.request.get('test_account_password')
     wifi_ssid = self.request.get('wifi_ssid')
     wifi_password = self.request.get('wifi_password')
+    sendgrid_api_key = self.request.get('sendgrid_api_key')
+    sendgrid_sender = self.request.get('sendgrid_sender')
 
     config.build_apiary_service_account_email = (
         build_apiary_service_account_email)
@@ -137,15 +142,19 @@ class Handler(base_handler.Handler):
     config.github_credentials = github_credentials
     config.platform_group_mappings = platform_group_mappings
     config.privileged_users = privileged_users
+    config.relax_security_bug_restrictions = bool(
+        relax_security_bug_restrictions)
     config.relax_testcase_restrictions = bool(relax_testcase_restrictions)
+    config.reproduce_tool_client_id = reproduce_tool_client_id
+    config.reproduce_tool_client_secret = reproduce_tool_client_secret
     config.reproduction_help_url = reproduction_help_url
     config.revision_vars_url = revision_vars_url
-    config.stack_blacklist = stack_blacklist
-    config.stack_clean_regex = stack_clean_regex
     config.test_account_email = test_account_email
     config.test_account_password = test_account_password
     config.wifi_ssid = wifi_ssid
     config.wifi_password = wifi_password
+    config.sendgrid_api_key = sendgrid_api_key
+    config.sendgrid_sender = sendgrid_sender
 
     helpers.log('Configuration', helpers.MODIFY_OPERATION)
 

@@ -12,16 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Performance stats constants and helpers for libFuzzer."""
-
 import re
-
-import constants
 
 from bot.fuzzers import dictionary_manager
 from bot.fuzzers import strategy
 from bot.fuzzers import utils as fuzzer_utils
+from bot.fuzzers.libFuzzer import constants
 from crash_analysis.stack_parsing import stack_analyzer
 from metrics import logs
+from system import environment
 
 # Regular expressions to detect different types of crashes.
 LEAK_TESTCASE_REGEX = re.compile(r'.*ERROR: LeakSanitizer.*')
@@ -53,8 +52,6 @@ LIBFUZZER_LOG_SEED_CORPUS_INFO_REGEX = re.compile(
 LIBFUZZER_LOG_START_INITED_REGEX = re.compile(
     r'#\d+\s+INITED\s+cov:\s+(\d+)\s+ft:\s+(\d+).*')
 LIBFUZZER_MERGE_LOG_EDGE_COVERAGE_REGEX = re.compile(r'#\d+.*cov:\s+(\d+).*')
-LIBFUZZER_MERGE_LOG_STATS_REGEX = re.compile(
-    r'MERGE.*:\s(\d+)\s+new files with\s+(\d+)\s+new features added.*')
 LIBFUZZER_MODULES_LOADED_REGEX = re.compile(
     r'^INFO:\s+Loaded\s+\d+\s+(modules|PC tables)\s+\((\d+)\s+.*\).*')
 
@@ -72,13 +69,13 @@ def calculate_log_lines(log_lines):
   ignored_lines_count = 0
 
   lines_after_last_libfuzzer_line_count = 0
-  start = False
+  libfuzzer_inited = False
   found_libfuzzer_crash = False
   for line in log_lines:
-    if not start:
+    if not libfuzzer_inited:
       # Skip to start of libFuzzer log output.
       if LIBFUZZER_LOG_START_INITED_REGEX.match(line):
-        start = True
+        libfuzzer_inited = True
       else:
         ignored_lines_count += 1
         continue
@@ -114,6 +111,11 @@ def calculate_log_lines(log_lines):
   return other_lines_count, libfuzzer_lines_count, ignored_lines_count
 
 
+def strategy_column_name(strategy_name):
+  """Convert the strategy name into stats column name."""
+  return 'strategy_%s' % strategy_name
+
+
 def parse_fuzzing_strategies(log_lines, strategies):
   """Extract stats for fuzzing strategies used."""
   if not strategies:
@@ -134,24 +136,19 @@ def parse_fuzzing_strategies(log_lines, strategies):
 
     try:
       strategy_value = int(line[len(strategy_prefix):])
-      stats['strategy_' + strategy_name] = strategy_value
+      stats[strategy_column_name(strategy_name)] = strategy_value
     except (IndexError, ValueError) as e:
       logs.log_error('Failed to parse strategy "%s":\n%s\n' % (line, str(e)))
 
-  for line in strategies:
-    parse_line_for_strategy_prefix(line, strategy.CORPUS_SUBSET_STRATEGY)
+  # These strategies are used with different values specified in the prefix.
+  for strategy_type in strategy.strategies_with_prefix_value:
+    for line in strategies:
+      parse_line_for_strategy_prefix(line, strategy_type.name)
 
   # Other strategies are either ON or OFF, without arbitrary values.
-  if strategy.CORPUS_MUTATION_RADAMSA_STRATEGY in strategies:
-    stats['strategy_corpus_mutations_radamsa'] = 1
-  if strategy.CORPUS_MUTATION_ML_RNN_STRATEGY in strategies:
-    stats['strategy_corpus_mutations_ml_rnn'] = 1
-  if strategy.RANDOM_MAX_LENGTH_STRATEGY in strategies:
-    stats['strategy_random_max_len'] = 1
-  if strategy.RECOMMENDED_DICTIONARY_STRATEGY in strategies:
-    stats['strategy_recommended_dict'] = 1
-  if strategy.VALUE_PROFILE_STRATEGY in strategies:
-    stats['strategy_value_profile'] = 1
+  for strategy_type in strategy.strategies_with_boolean_value:
+    if strategy_type.name in strategies:
+      stats[strategy_column_name(strategy_type.name)] = 1
 
   return stats
 
@@ -177,29 +174,26 @@ def parse_performance_features(log_lines, strategies, arguments):
       'max_len': 0,
       'manual_dict_size': 0,
       'merge_edge_coverage': 0,
-      'merge_new_files': 0,
-      'merge_new_features': 0,
+      'new_edges': 0,
+      'new_features': 0,
       'oom_count': 0,
       'recommended_dict_size': 0,
       'slow_unit_count': 0,
       'slow_units_count': 0,
       'startup_crash_count': 1,
-      'strategy_corpus_mutations_radamsa': 0,
-      'strategy_corpus_mutations_ml_rnn': 0,
-      'strategy_corpus_subset': 0,
-      'strategy_random_max_len': 0,
-      'strategy_recommended_dict': 0,
-      'strategy_value_profile': 0,
       'timeout_count': 0,
   }
 
+  # Extract strategy selection method.
+  stats['strategy_selection_method'] = environment.get_value(
+      'STRATEGY_SELECTION_METHOD', default_value='default')
+
+  # Initialize all strategy stats as disabled by default.
+  for strategy_type in strategy.strategy_list:
+    stats[strategy_column_name(strategy_type.name)] = 0
+
   # Process fuzzing strategies used.
   stats.update(parse_fuzzing_strategies(log_lines, strategies))
-
-  # Corpus rss is only applicable when using the full corpus and not
-  # in the corpus subset strategy run.
-  if not stats['strategy_corpus_subset']:
-    stats['corpus_rss_mb'] = 0
 
   (stats['log_lines_unwanted'], stats['log_lines_from_engine'],
    stats['log_lines_ignored']) = calculate_log_lines(log_lines)
@@ -217,6 +211,7 @@ def parse_performance_features(log_lines, strategies, arguments):
 
   # Different crashes and other flags extracted via regexp match.
   has_corpus = False
+  libfuzzer_inited = False
   for line in log_lines:
     if LIBFUZZER_BAD_INSTRUMENTATION_REGEX.match(line):
       stats['bad_instrumentation'] = 1
@@ -250,8 +245,6 @@ def parse_performance_features(log_lines, strategies, arguments):
     match = LIBFUZZER_LOG_SEED_CORPUS_INFO_REGEX.match(line)
     if match:
       has_corpus = True
-      if not stats['strategy_corpus_subset']:
-        stats['corpus_rss_mb'] = int(match.group(2))
 
     match = LIBFUZZER_MODULES_LOADED_REGEX.match(line)
     if match:
@@ -260,15 +253,19 @@ def parse_performance_features(log_lines, strategies, arguments):
 
     match = LIBFUZZER_LOG_START_INITED_REGEX.match(line)
     if match:
-      stats['initial_edge_coverage'] = int(match.group(1))
-      stats['initial_feature_coverage'] = int(match.group(2))
+      stats['initial_edge_coverage'] = stats['edge_coverage'] = int(
+          match.group(1))
+      stats['initial_feature_coverage'] = stats['feature_coverage'] = int(
+          match.group(2))
+      libfuzzer_inited = True
       continue
 
     # This regexp will match multiple lines and will be overwriting the stats.
     # This is done on purpose, as the last line in the log may have different
     # format, e.g. 'DONE' without a crash and 'NEW' or 'pulse' with a crash.
+    # Also, ignore values before INITED i.e. while seed corpus is being read.
     match = LIBFUZZER_LOG_COVERAGE_REGEX.match(line)
-    if match:
+    if match and libfuzzer_inited:
       stats['edge_coverage'] = int(match.group(1))
       stats['feature_coverage'] = int(match.group(2))
       continue
@@ -288,6 +285,16 @@ def parse_performance_features(log_lines, strategies, arguments):
   if has_corpus and not stats['log_lines_from_engine']:
     stats['corpus_crash_count'] = 1
 
+  # new_cov_* is a reliable metric when corpus subset strategy is not used.
+  if not stats['strategy_corpus_subset']:
+    assert stats['edge_coverage'] >= stats['initial_edge_coverage']
+    stats['new_edges'] = (
+        stats['edge_coverage'] - stats['initial_edge_coverage'])
+
+    assert stats['feature_coverage'] >= stats['initial_feature_coverage']
+    stats['new_features'] = (
+        stats['feature_coverage'] - stats['initial_feature_coverage'])
+
   return stats
 
 
@@ -299,10 +306,5 @@ def parse_stats_from_merge_log(log_lines):
     if match:
       stats['merge_edge_coverage'] = int(match.group(1))
       continue
-
-    match = LIBFUZZER_MERGE_LOG_STATS_REGEX.match(line)
-    if match:
-      stats['merge_new_files'] = int(match.group(1))
-      stats['merge_new_features'] = int(match.group(2))
 
   return stats

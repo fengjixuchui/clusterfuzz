@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Environment modification functions."""
+from __future__ import absolute_import
 
 import os
 import re
+import six
 
 try:
-  import file_host
-  import host
+  from . import file_host
+  from . import host
   from protos import untrusted_runner_pb2
 except ImportError:
   # TODO(ochang): Fix this.
@@ -31,6 +33,7 @@ FORWARDED_ENVIRONMENT_VARIABLES = [
         r'^ASAN_OPTIONS$',
         r'^BACKUP_BUCKET$',
         r'^CORPUS_BUCKET$',
+        r'^MUTATOR_PLUGINS_BUCKET$',
         r'^FUZZ_CORPUS_DIR$',
         r'^FUZZER_DIR$',
         r'^FUZZER_NAME_REGEX$',
@@ -42,6 +45,8 @@ FORWARDED_ENVIRONMENT_VARIABLES = [
         r'^MSAN_OPTIONS$',
         r'^QUARANTINE_BUCKET$',
         r'^SHARED_CORPUS_BUCKET$',
+        r'^STRATEGY_SELECTION_DISTRIBUTION$',
+        r'^STRATEGY_SELECTION_METHOD$',
         r'^TASK_NAME$',
         r'^TASK_PAYLOAD$',
         r'^TEST_TIMEOUT$',
@@ -72,7 +77,7 @@ def should_rebase_environment_value(environment_variable):
 def update_environment(env):
   """Update worker's environment."""
   processed_env = {}
-  for key, value in env.iteritems():
+  for key, value in six.iteritems(env):
     if should_rebase_environment_value(key):
       value = file_host.rebase_to_worker_root(value)
 
@@ -87,7 +92,7 @@ def set_environment_vars(env, source_env):
   if not source_env:
     return
 
-  for name, value in source_env.iteritems():
+  for name, value in six.iteritems(source_env):
     if is_forwarded_environment_variable(name):
       # Avoid creating circular dependencies from importing environment by
       # using os.getenv.

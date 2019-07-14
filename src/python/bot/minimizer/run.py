@@ -12,17 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Run minimizers with default configuration from the command line."""
+from __future__ import absolute_import
+from __future__ import print_function
 
 import argparse
 import os
 import sys
 
-import chunk_minimizer
-import delta_minimizer
-import html_minimizer
-import js_minimizer
-import minimizer
-import utils
+from . import chunk_minimizer
+from . import delta_minimizer
+from . import html_minimizer
+from . import js_minimizer
+from . import minimizer
+from . import utils
 
 
 def main():
@@ -44,7 +46,7 @@ def main():
   parser.add_argument(
       '-m',
       '--minimizer',
-      choices=minimizers.keys(),
+      choices=list(minimizers.keys()),
       default='line',
       help='minimization strategy')
   parser.add_argument(
@@ -69,18 +71,18 @@ def main():
     with open(file_path, 'rb') as file_handle:
       data = file_handle.read()
   except IOError:
-    print 'Unable to open input file %s.' % file_path
+    print('Unable to open input file %s.' % file_path)
     sys.exit(1)
 
   # Do not print an additional newline after minimization.
   minimized_output = selected_minimizer.run(
       data, thread_count=thread_count, file_extension=file_extension)
-  print 'Writing minimized output to %s.' % output_file_path
+  print('Writing minimized output to %s.' % output_file_path)
   try:
     with open(output_file_path, 'wb') as file_handle:
       file_handle.write(minimized_output)
   except IOError:
-    print 'Unable to write output file %s.' % output_file_path
+    print('Unable to write output file %s.' % output_file_path)
     sys.exit(1)
 
 

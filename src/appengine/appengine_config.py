@@ -18,52 +18,6 @@ import sys
 
 from google.appengine.ext import ndb
 from google.appengine.ext import vendor
-from webob import multidict
-
-
-def from_fieldstorage(cls, fs):
-  """Create a dict from a cgi.FieldStorage instance.
-
-  See this for more details:
-  http://code.google.com/p/googleappengine/issues/detail?id=2749
-  """
-  import base64
-  import quopri
-
-  obj = cls()
-  if fs.list:
-    # fs.list can be None when there's nothing to parse
-    for field in fs.list:
-      if field.filename:
-        obj.add(field.name, field)
-      else:
-
-        # first, set a common charset to utf-8.
-        common_charset = 'utf-8'
-
-        # second, check Content-Transfer-Encoding and decode
-        # the value appropriately
-        field_value = field.value
-        transfer_encoding = field.headers.get('Content-Transfer-Encoding', None)
-
-        if transfer_encoding == 'base64':
-          field_value = base64.b64decode(field_value)
-
-        if transfer_encoding == 'quoted-printable':
-          field_value = quopri.decodestring(field_value)
-
-        if field.type_options.has_key(
-            'charset') and field.type_options['charset'] != common_charset:
-          # decode with a charset specified in each
-          # multipart, and then encode it again with a
-          # charset specified in top level FieldStorage
-          field_value = field_value.decode(
-              field.type_options['charset']).encode(common_charset)
-
-        obj.add(field.name, field_value)
-
-  return obj
-
 
 # True if the app is running inside the dev appserver, false otherwise.  This
 # is not the opposite of IS_RUNNING_IN_PRODUCTION; it is possible (in tests,
@@ -80,15 +34,26 @@ IS_RUNNING_IN_PRODUCTION = (
     os.getenv('SERVER_SOFTWARE') and
     os.getenv('SERVER_SOFTWARE').startswith('Google App Engine/'))
 
-multidict.MultiDict.from_fieldstorage = classmethod(from_fieldstorage)
-
 # Add necessary directories to path.
+config_modules_path = os.path.join('config', 'modules')
+
 if IS_RUNNING_IN_PRODUCTION or IS_RUNNING_IN_DEV_APPSERVER:
   vendor.add('third_party')
   vendor.add('python')
+  if os.path.exists(config_modules_path):
+    vendor.add(config_modules_path)
 else:
   sys.path.insert(0, 'third_party')
   sys.path.insert(0, 'python')
+  if os.path.exists(config_modules_path):
+    sys.path.insert(0, config_modules_path)
+
+try:
+  # Run any module initialization code.
+  import module_init
+  module_init.appengine()
+except ImportError:
+  pass
 
 # Adding the protobuf module to the google module. Otherwise, we couldn't
 # import google.protobuf because google.appengine already took the name.
@@ -108,3 +73,12 @@ if IS_RUNNING_IN_PRODUCTION or IS_RUNNING_IN_DEV_APPSERVER:
   # Disable the in-context cache, as it can use up a lot of memory for longer
   # running tasks such as cron jobs.
   ndb.get_context().set_cache_policy(False)
+
+  # Use the App Engine Requests adapter. This makes sure that Requests uses
+  # URLFetch. This is a workaround till we migrate to Python 3 on App Engine
+  # Flex.
+  import requests_toolbelt.adapters.appengine
+  requests_toolbelt.adapters.appengine.monkeypatch()
+
+  import firebase_admin
+  firebase_admin.initialize_app()

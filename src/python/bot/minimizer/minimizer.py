@@ -12,15 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Base classes for other minimizers."""
+from __future__ import absolute_import
 
+from future import standard_library
+standard_library.install_aliases()
+from builtins import object
+from builtins import range
 import copy
 import functools
 import os
 import tempfile
-import time
 import threading
+import time
 
-import errors
+from . import errors
 
 DEFAULT_CLEANUP_INTERVAL = 20
 DEFAULT_THREAD_COUNT = 8
@@ -39,7 +44,7 @@ class DummyLock(object):
   def __exit__(self, exec_type, value, traceback):
     pass
 
-  def __nonzero__(self):
+  def __bool__(self):
     return False
 
 
@@ -119,7 +124,7 @@ class TestQueue(object):
     """Process all tests in the queue and block until completion."""
     while self.queue:
       threads = [
-          threading.Thread(target=self._work) for _ in xrange(self.thread_count)
+          threading.Thread(target=self._work) for _ in range(self.thread_count)
       ]
       for thread in threads:
         thread.start()
@@ -218,7 +223,7 @@ class Testcase(object):
   # Functions used when preparing tests.
   def _range_complement(self, current_range):
     """Return required tokens in the complement of the specified range."""
-    result = xrange(len(self.tokens))
+    result = list(range(len(self.tokens)))
     to_remove = set(current_range)
     return [i for i in result if i not in to_remove and self.required_tokens[i]]
 
@@ -368,20 +373,20 @@ class Testcase(object):
     if not test_passed:
       for token in aggregate_hypothesis:
         self.required_tokens[token] = False
-      return True
+      return
 
     # Passed (no crash). We need to try a bit harder to resolve this conflict.
     if len(hypotheses) == 1:
       # We really cannot remove this token. No additional work to be done.
-      return False
+      return
 
-    front = hypotheses[:len(hypotheses) / 2]
-    back = hypotheses[len(hypotheses) / 2:]
+    middle = len(hypotheses) // 2
+    front = hypotheses[:middle]
+    back = hypotheses[middle:]
 
     # If we could remove either one of two hypotheses, favor removing the first.
     front_merged_successfully = self._attempt_merge(front)
     self._attempt_merge(back, sibling_merge_succeeded=front_merged_successfully)
-    return False
 
   def _do_single_pass_process(self):
     """Process through a single pass of our test queue."""
@@ -546,7 +551,7 @@ class Minimizer(object):
     """Wrapper to perform common tasks and call |_execute|."""
     try:
       testcase = self._execute(data)
-    except errors.MinimizationDeadlineExceededError, error:
+    except errors.MinimizationDeadlineExceededError as error:
       # When a MinimizationDeadlineExceededError is raised, the partially
       # minimized test case is stored with it so that we can recover the work
       # that had been done up to that point.

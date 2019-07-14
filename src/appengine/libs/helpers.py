@@ -18,11 +18,10 @@ import logging
 import sys
 import traceback
 
-from google.appengine.api import users
-
 from base import errors
 from datastore import data_handler
-from issue_management import issue_tracker_utils
+from libs import auth
+from libs.issue_management import issue_tracker_utils
 
 VIEW_OPERATION = 'View'
 MODIFY_OPERATION = 'Modify'
@@ -86,13 +85,13 @@ def get_testcase(testcase_id):
   return testcase
 
 
-def get_issue_tracker_manager(testcase):
-  """Get an IssueTrackerManager or raise EarlyExitException."""
-  itm = issue_tracker_utils.get_issue_tracker_manager(testcase)
-  if not itm:
+def get_issue_tracker_for_testcase(testcase):
+  """Get an IssueTracker or raise EarlyExitException."""
+  issue_tracker = issue_tracker_utils.get_issue_tracker_for_testcase(testcase)
+  if not issue_tracker:
     raise EarlyExitException(
         "The testcase doesn't have a corresponding issue tracker", 404)
-  return itm
+  return issue_tracker
 
 
 def cast(value, fn, error_message):
@@ -152,7 +151,7 @@ def get_or_exit(fn,
 def get_user_email():
   """Returns currently logged-in user's email."""
   try:
-    return users.get_current_user().email()
+    return auth.get_current_user().email
   except Exception:
     return ''
 

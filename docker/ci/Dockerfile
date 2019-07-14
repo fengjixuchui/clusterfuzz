@@ -20,6 +20,7 @@ RUN curl -sL https://deb.nodesource.com/setup_11.x | sudo -E bash -
 RUN apt-get update && \
     apt-get install -y \
         git \
+        golang-go \
         google-cloud-sdk-app-engine-go \
         google-cloud-sdk-app-engine-python \
         google-cloud-sdk-app-engine-python-extras \
@@ -37,9 +38,10 @@ RUN echo "deb [arch=amd64] http://storage.googleapis.com/bazel-apt stable jdk1.8
 
 RUN npm install -g bower polymer-bundler
 
-# RUN curl -s https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
-#     echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list && \
-#     apt-get update && apt-get install -y google-chrome-stable
+# Install latest Chrome stable, needed for chromedriver testing.
+RUN curl -s https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list && \
+    apt-get update && apt-get install -y google-chrome-stable
 
 # Container Builder mount.
 VOLUME /workspace
@@ -53,9 +55,6 @@ COPY requirements.txt /tmp
 RUN pip install -r /tmp/requirements.txt && pip install --upgrade pip
 
 ENV APPENGINE_DIRECTORY $APPENGINE_SDK_PATH
-
-RUN git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git /depot_tools
-ENV PATH /depot_tools:$PATH
 
 ENV TEST_BOT_ENVIRONMENT 1
 ENV PYTHONDONTWRITEBYTECODE 1

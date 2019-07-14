@@ -13,6 +13,7 @@
 # limitations under the License.
 """show tests."""
 # pylint: disable=protected-access
+from past.builtins import basestring
 import datetime
 import os
 import unittest
@@ -294,17 +295,11 @@ class FilterStacktraceTest(unittest.TestCase):
 
     self.mock.highlight_common_stack_frames.side_effect = highlight
 
-  def test_clean(self):
-    """Ensure it cleans trace with stack_clean_regex."""
-    stack = 'aaaa\nbbbb\ncccc\naaaa\nbbbb\ncccc'
-    expected = 'aaaa\ncccc\naaaa\ncccc'
-    self.assertEqual(show.filter_stacktrace(stack, 'type', 'bb', {}), expected)
-
   def test_xss(self):
     """Ensure that we escape untrusted stacktrace."""
     stack = 'aaaa\n<script>alert("XSS")</script>\ncccc'
     expected = 'aaaa\n&lt;script&gt;alert(&quot;XSS&quot;)&lt;/script&gt;\ncccc'
-    self.assertEqual(show.filter_stacktrace(stack, 'type', '', {}), expected)
+    self.assertEqual(show.filter_stacktrace(stack, 'type', {}), expected)
 
   def test_asan_chromium(self):
     """Ensure it linkifies asan trace for chromium."""
@@ -328,7 +323,7 @@ class FilterStacktraceTest(unittest.TestCase):
                 '</a>\n'
                 'random')
     self.assertEqual(
-        show.filter_stacktrace(stack, 'type', '', revisions_dict), expected)
+        show.filter_stacktrace(stack, 'type', revisions_dict), expected)
 
   def test_asan_oss_fuzz(self):
     """Ensure it linkifies asan trace for oss-fuzz."""
@@ -354,7 +349,7 @@ class FilterStacktraceTest(unittest.TestCase):
                 '</a>\n'
                 'random')
     self.assertEqual(
-        show.filter_stacktrace(stack, 'type', '', revisions_dict), expected)
+        show.filter_stacktrace(stack, 'type', revisions_dict), expected)
 
   def test_asan_v8(self):
     """Ensure it linkifies v8 win trace for chromium."""
@@ -374,7 +369,7 @@ class FilterStacktraceTest(unittest.TestCase):
                 'random')
 
     self.assertEqual(
-        show.filter_stacktrace(stack, 'type', '', revisions_dict), expected)
+        show.filter_stacktrace(stack, 'type', revisions_dict), expected)
 
   def test_no_linkify(self):
     """Ensure that we don't linkify a non-stack frame line."""
@@ -396,7 +391,7 @@ class FilterStacktraceTest(unittest.TestCase):
     expected = stack
 
     self.assertEqual(
-        show.filter_stacktrace(stack, 'type', '', revisions_dict), expected)
+        show.filter_stacktrace(stack, 'type', revisions_dict), expected)
 
 
 @test_utils.with_cloud_emulators('datastore')
@@ -406,20 +401,21 @@ class GetTestcaseTest(unittest.TestCase):
   def setUp(self):
     test_helpers.patch_environ(self)
     test_helpers.patch(self, [
-        'metrics.crash_stats.get_last_crash_time',
-        'datastore.data_types.Job.get_environment',
+        'build_management.revisions.get_component_range_list',
+        'build_management.revisions.get_component_revisions_dict',
         'config.db_config.get',
         'config.db_config.get_value',
         'config.db_config.get_value_for_job',
-        'build_management.revisions.get_component_range_list',
-        'build_management.revisions.get_component_revisions_dict',
         'datastore.data_handler.get_stacktrace',
-        'issue_management.issue_tracker_utils.get_issue_url',
-        'libs.access.has_access',
-        'libs.helpers.get_user_email',
-        'libs.access.can_user_access_testcase',
+        'datastore.data_types.Job.get_environment',
         'handlers.testcase_detail.show.filter_stacktrace',
+        'libs.issue_management.issue_tracker_utils.get_issue_url',
+        'libs.access.can_user_access_testcase',
+        'libs.access.has_access',
+        'libs.auth.is_current_user_admin',
         'libs.form.generate_csrf_token',
+        'libs.helpers.get_user_email',
+        'metrics.crash_stats.get_last_crash_time',
     ])
 
     self.mock.has_access.return_value = False
@@ -436,6 +432,8 @@ class GetTestcaseTest(unittest.TestCase):
             'rev': 'revision'
         }
     }
+
+    self.mock.is_current_user_admin.return_value = False
 
     self.make_token().put()
     os.environ['ISSUE_TRACKER'] = 'test-issue-tracker'
@@ -515,9 +513,9 @@ class GetTestcaseTest(unittest.TestCase):
         'fixed': 'NO',
         'issue_url': 'issue_url',
         'metadata': {},
-        'minimized_testcase_size': '',
+        'minimized_testcase_size': None,
         'needs_refresh': True,
-        'original_testcase_size': '',
+        'original_testcase_size': None,
         'privileged_user': False,
         'regression': 'Pending',
         'security_severity': None,
@@ -592,9 +590,9 @@ class GetTestcaseTest(unittest.TestCase):
         'fixed': 'NO',
         'issue_url': 'issue_url',
         'metadata': {},
-        'minimized_testcase_size': '',
+        'minimized_testcase_size': None,
         'needs_refresh': True,
-        'original_testcase_size': '',
+        'original_testcase_size': None,
         'privileged_user': False,
         'regression': 'Pending',
         'security_severity': None,

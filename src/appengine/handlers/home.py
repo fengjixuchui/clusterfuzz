@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Home page handler."""
+from __future__ import absolute_import
 
-import base_handler
+from . import base_handler
 
 from base import external_users
 from base import memoize
@@ -88,7 +89,7 @@ def _get_project_results_for_jobs(jobs):
             True
     })
 
-  projects = projects.values()
+  projects = list(projects.values())
   projects.sort(key=_sort_by_name)
   for project in projects:
     project['jobs'].sort(key=_sort_by_name)
@@ -140,10 +141,6 @@ class Handler(base_handler.Handler):
   @handler.get(handler.HTML)
   def get(self):
     """GET handler."""
-    if not utils.is_oss_fuzz():
-      self.redirect('/testcases')
-      return
-
     self.render('oss-fuzz-home.html', get_results())
 
 

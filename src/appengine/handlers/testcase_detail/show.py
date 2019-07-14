@@ -13,37 +13,35 @@
 # limitations under the License.
 """Handler for showing the testcase detail page."""
 
+from builtins import object
+from builtins import range
 import cgi
 import datetime
 import jinja2
 import re
 
-from google.appengine.api import users
-
 from base import utils
 from build_management import revisions
 from build_management import source_mapper
 from config import db_config
+from crash_analysis import severity_analyzer
 from datastore import data_handler
 from datastore import data_types
 from fuzzing import leak_blacklist
 from google_cloud_utils import blobs
 from handlers import base_handler
-from issue_management import issue_tracker_utils
-from issue_management import label_utils
 from libs import access
+from libs import auth
 from libs import form
 from libs import handler
 from libs import helpers
+from libs.issue_management import issue_tracker_utils
 from metrics import crash_stats
 from system import environment
 
 FIND_SIMILAR_ISSUES_OPTIONS = [{
     'type': 'open',
     'label': 'Open'
-}, {
-    'type': 'new',
-    'label': 'New'
 }, {
     'type': 'all',
     'label': 'All'
@@ -157,26 +155,13 @@ def highlight_common_stack_frames(crash_stacktrace):
   return '\n'.join(highlighted_crash_stacktrace_lines)
 
 
-def filter_stacktrace(crash_stacktrace, crash_type, stack_clean_regex_lines,
-                      revisions_dict):
+def filter_stacktrace(crash_stacktrace, crash_type, revisions_dict):
   """Clean up and format a stack trace for display."""
   if not crash_stacktrace:
     return ''
 
-  # Get stacktrace clean regex for filtering strings and even full lines.
-  stack_clean_regex_list = filter(bool, stack_clean_regex_lines.splitlines())
-  stack_clean_regex = (
-      re.compile('(%s)' % '|'.join(stack_clean_regex_list))
-      if stack_clean_regex_list else None)
-
   filtered_crash_lines = []
   for line in crash_stacktrace.splitlines():
-    # Null out matched string from stacktrace clean regex.
-    if stack_clean_regex:
-      line = stack_clean_regex.sub('', line)
-      if not line:
-        continue
-
     # Html escape line content to prevent XSS.
     line = cgi.escape(line, quote=True)
 
@@ -369,15 +354,9 @@ def _get_revision_range_html(job_type, start_revision, end_revision=None):
 
 def _get_blob_size_string(blob_key):
   """Return blob size string."""
-  if not blob_key or blob_key == 'NA':
-    return ''
-
-  try:
-    blob_size = blobs.get_blob_size(blob_key)
-    if blob_size is None:
-      return ''
-  except:
-    return ''
+  blob_size = blobs.get_blob_size(blob_key)
+  if blob_size is None:
+    return None
 
   return utils.get_size_string(blob_size)
 
@@ -396,7 +375,6 @@ def get_testcase_detail(testcase):
   metadata = testcase.get_metadata()
   original_testcase_size = _get_blob_size_string(testcase.fuzzed_keys)
   minimized_testcase_size = _get_blob_size_string(testcase.minimized_keys)
-  stack_clean_regex_lines = config.stack_clean_regex
   has_issue_tracker = bool(data_handler.get_issue_tracker_name())
 
   if not testcase.regression:
@@ -433,7 +411,6 @@ def get_testcase_detail(testcase):
       crash_revision, testcase.job_type)
   crash_stacktrace = data_handler.get_stacktrace(testcase)
   crash_stacktrace = filter_stacktrace(crash_stacktrace, testcase.crash_type,
-                                       stack_clean_regex_lines,
                                        crash_revisions_dict)
   crash_stacktrace = convert_to_lines(crash_stacktrace, crash_state_lines,
                                       crash_type)
@@ -447,7 +424,7 @@ def get_testcase_detail(testcase):
   second_crash_stacktrace = data_handler.get_stacktrace(
       testcase, stack_attribute='second_crash_stacktrace')
   second_crash_stacktrace = filter_stacktrace(
-      second_crash_stacktrace, testcase.crash_type, stack_clean_regex_lines,
+      second_crash_stacktrace, testcase.crash_type,
       second_crash_stacktrace_revisions_dict)
   second_crash_stacktrace = convert_to_lines(second_crash_stacktrace,
                                              crash_state_lines, crash_type)
@@ -461,7 +438,7 @@ def get_testcase_detail(testcase):
       testcase, stack_attribute='last_tested_crash_stacktrace')
   last_tested_crash_stacktrace = filter_stacktrace(
       last_tested_crash_stacktrace, testcase.crash_type,
-      stack_clean_regex_lines, last_tested_crash_revisions_dict)
+      last_tested_crash_revisions_dict)
   last_tested_crash_stacktrace = convert_to_lines(last_tested_crash_stacktrace,
                                                   crash_state_lines, crash_type)
   last_tested_crash_stacktrace_preview_lines = _preview_stacktrace(
@@ -493,7 +470,7 @@ def get_testcase_detail(testcase):
         pending_stack_task)))
 
   if data_types.SecuritySeverity.is_valid(testcase.security_severity):
-    security_severity = label_utils.severity_to_string(
+    security_severity = severity_analyzer.severity_to_string(
         testcase.security_severity)
   else:
     security_severity = None
@@ -526,25 +503,44 @@ def get_testcase_detail(testcase):
 
   helpers.log('Testcase %s' % testcase.key.id(), helpers.VIEW_OPERATION)
   return {
-      'id': testcase.key.id(),
-      'crash_type': crash_type,
-      'crash_address': crash_address,
-      'crash_state': crash_state,  # Used by reproduce tool.
-      'crash_state_lines': crash_state_lines,
-      'crash_revision': testcase.crash_revision,
-      'csrf_token': form.generate_csrf_token(),
-      'external_user': external_user,
-      'footer': testcase.comments,
-      'fixed': fixed,
-      'fixed_full': fixed_full,
-      'issue_url': issue_url,
-      'is_admin': users.is_current_user_admin(),
-      'metadata': metadata,
-      'minimized_testcase_size': minimized_testcase_size,
-      'needs_refresh': needs_refresh,
-      'original_testcase_size': original_testcase_size,
-      'privileged_user': privileged_user,
-      'regression': regression,
+      'id':
+          testcase.key.id(),
+      'crash_type':
+          crash_type,
+      'crash_address':
+          crash_address,
+      'crash_state':
+          crash_state,  # Used by reproduce tool.
+      'crash_state_lines':
+          crash_state_lines,
+      'crash_revision':
+          testcase.crash_revision,
+      'csrf_token':
+          form.generate_csrf_token(),
+      'external_user':
+          external_user,
+      'footer':
+          testcase.comments,
+      'fixed':
+          fixed,
+      'fixed_full':
+          fixed_full,
+      'issue_url':
+          issue_url,
+      'is_admin':
+          auth.is_current_user_admin(),
+      'metadata':
+          metadata,
+      'minimized_testcase_size':
+          minimized_testcase_size,
+      'needs_refresh':
+          needs_refresh,
+      'original_testcase_size':
+          original_testcase_size,
+      'privileged_user':
+          privileged_user,
+      'regression':
+          regression,
       'crash_stacktrace': {
           'lines':
               crash_stacktrace,
@@ -574,38 +570,58 @@ def get_testcase_detail(testcase):
               revisions.get_real_revision(
                   last_tested_crash_revision, testcase.job_type, display=True)
       },
-      'security_severity': security_severity,
-      'security_severities': data_types.SecuritySeverity.list(),
+      'security_severity':
+          security_severity,
+      'security_severities':
+          data_types.SecuritySeverity.list(),
       'stats': {
           'min_hour': crash_stats.get_min_hour(),
           'max_hour': crash_stats.get_max_hour(),
       },
-      'suspected_cls': _parse_suspected_cls(metadata.get('predator_result')),
-      'testcase': testcase,
-      'timestamp': utils.utc_datetime_to_timestamp(testcase.timestamp),
-      'show_blame': testcase.has_blame(),
-      'show_impact': testcase.has_impacts(),
-      'impacts_production': testcase.impacts_production(),
-      'find_similar_issues_options': FIND_SIMILAR_ISSUES_OPTIONS,
-      'auto_delete_timestamp': auto_delete_timestamp,
-      'auto_close_timestamp': auto_close_timestamp,
-      'memory_tool_display_label': memory_tool_display_label,
-      'memory_tool_display_value': memory_tool_display_value,
-      'last_tested': last_tested,
-      'is_admin_or_not_oss_fuzz': is_admin_or_not_oss_fuzz(),
-      'has_issue_tracker': has_issue_tracker,
-      'reproduction_help_url': reproduction_help_url,
+      'suspected_cls':
+          _parse_suspected_cls(metadata.get('predator_result')),
+      'testcase':
+          testcase,
+      'timestamp':
+          utils.utc_datetime_to_timestamp(testcase.timestamp),
+      'show_blame':
+          testcase.has_blame(),
+      'show_impact':
+          testcase.has_impacts(),
+      'impacts_production':
+          testcase.impacts_production(),
+      'find_similar_issues_options':
+          FIND_SIMILAR_ISSUES_OPTIONS,
+      'auto_delete_timestamp':
+          auto_delete_timestamp,
+      'auto_close_timestamp':
+          auto_close_timestamp,
+      'memory_tool_display_label':
+          memory_tool_display_label,
+      'memory_tool_display_value':
+          memory_tool_display_value,
+      'last_tested':
+          last_tested,
+      'is_admin_or_not_oss_fuzz':
+          is_admin_or_not_oss_fuzz(),
+      'has_issue_tracker':
+          has_issue_tracker,
+      'reproduction_help_url':
+          reproduction_help_url,
+      'is_local_development':
+          environment.is_running_on_app_engine_development(),
   }
 
 
 def is_admin_or_not_oss_fuzz():
   """Return True if the current user is an admin or if this is not OSS-Fuzz."""
-  return not utils.is_oss_fuzz() or users.is_current_user_admin()
+  return not utils.is_oss_fuzz() or auth.is_current_user_admin()
 
 
 class Handler(base_handler.Handler):
   """Handler that shows a testcase in detail."""
 
+  @handler.get(handler.HTML)
   def get(self, testcase_id):
     """Serve the testcase detail HTML page."""
     values = {'info': get_testcase_detail_by_id(testcase_id)}

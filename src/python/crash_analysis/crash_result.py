@@ -15,6 +15,8 @@
 
 # pylint: disable=unpacking-non-sequence
 
+from builtins import object
+
 from base import utils
 from crash_analysis import crash_analyzer
 from crash_analysis.stack_parsing import stack_analyzer
@@ -71,17 +73,27 @@ class CrashResult(object):
 
     return state.crash_stacktrace
 
-  def is_crash(self):
+  def get_type(self):
+    """Return the crash type."""
+    # It does not matter whether we use symbolized or unsymbolized data.
+    state = self.get_unsymbolized_data()
+    return state.crash_type
+
+  def is_crash(self, ignore_state=False):
     """Return True if this result was a crash."""
     crashed = crash_analyzer.is_crash(self.return_code, self.output)
+    if not crashed:
+      return False
+
     state = self.get_state(symbolized=False)
-    return crashed and state.strip()
+    if not state.strip() and not ignore_state:
+      return False
+    return True
 
   def should_ignore(self):
     """Return True if this crash should be ignored."""
     state = self.get_symbolized_data()
-    return crash_analyzer.ignore_stacktrace(state.crash_state,
-                                            state.crash_stacktrace)
+    return crash_analyzer.ignore_stacktrace(state.crash_stacktrace)
 
   def is_security_issue(self):
     """Return True if this crash is a security issue."""

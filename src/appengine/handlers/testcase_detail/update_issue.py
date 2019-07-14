@@ -16,9 +16,10 @@
 from datastore import data_handler
 from handlers import base_handler
 from handlers.testcase_detail import show
-from issue_management import issue_filer
 from libs import handler
 from libs import helpers
+from libs.issue_management import issue_filer
+from libs.issue_management import issue_tracker_policy
 
 
 class Handler(base_handler.Handler):
@@ -29,36 +30,35 @@ class Handler(base_handler.Handler):
     """Associate (or update) an existing issue with the testcase."""
     issue_id = helpers.cast(issue_id, int,
                             'Issue ID (%s) is not a number!' % issue_id)
-    itm = helpers.get_issue_tracker_manager(testcase)
+    issue_tracker = helpers.get_issue_tracker_for_testcase(testcase)
 
-    issue = helpers.get_or_exit(lambda: itm.get_issue(issue_id),
+    issue = helpers.get_or_exit(lambda: issue_tracker.get_issue(issue_id),
                                 'Issue (id=%d) is not found!' % issue_id,
                                 'Failed to get the issue (id=%s).' % issue_id,
                                 Exception)
 
-    if not issue.open:
+    if not issue.is_open:
       raise helpers.EarlyExitException(
           ('The issue (%d) is already closed and further updates are not'
            ' allowed. Please file a new issue instead!') % issue_id, 400)
 
-    # Create issue parameters.
-    issue.comment = data_handler.get_issue_description(testcase,
+    if not testcase.is_crash():
+      raise helpers.EarlyExitException(
+          'This is not a crash testcase, so issue update is not applicable.',
+          400)
+
+    issue_comment = data_handler.get_issue_description(testcase,
                                                        helpers.get_user_email())
-    issue_summary = data_handler.get_issue_summary(testcase)
+    if needs_summary_update:
+      issue.title = data_handler.get_issue_summary(testcase)
 
-    # NULL states leads to unhelpful summaries, so do not update in that case.
-    if needs_summary_update and testcase.crash_state != 'NULL':
-      issue.summary = issue_summary
+    policy = issue_tracker_policy.get(issue_tracker.project)
+    properties = policy.get_existing_issue_properties()
+    for label in properties.labels:
+      for result in issue_filer.apply_substitutions(label, testcase):
+        issue.labels.add(result)
 
-    # Add label on memory tool used.
-    issue_filer.add_memory_tool_label_if_needed(issue, testcase)
-
-    # Add view restrictions for internal job types.
-    issue_filer.add_view_restrictions_if_needed(issue, testcase)
-
-    # Don't enforce security severity label on an existing issue.
-
-    itm.save(issue)
+    issue.save(new_comment=issue_comment)
 
     testcase.bug_information = str(issue_id)
     testcase.put()

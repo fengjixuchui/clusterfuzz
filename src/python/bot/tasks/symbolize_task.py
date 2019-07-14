@@ -14,6 +14,7 @@
 """Symbolize task.
    Add stack traces from non-optimized release and debug builds."""
 
+from builtins import range
 import os
 
 from base import tasks
@@ -25,7 +26,7 @@ from crash_analysis import crash_analyzer
 from crash_analysis.crash_result import CrashResult
 from datastore import data_handler
 from datastore import data_types
-from fuzzing import tests
+from fuzzing import testcase_manager
 from metrics import logs
 from system import environment
 from system import process_handler
@@ -94,7 +95,7 @@ def execute_task(testcase_id, job_type):
       environment.reset_current_memory_tool_options(testcase.redzone)
 
       process_handler.terminate_stale_application_instances()
-      command = tests.get_command_line_for_application(
+      command = testcase_manager.get_command_line_for_application(
           testcase_file_path, needs_http=testcase.http_flag)
       return_code, crash_time, output = (
           process_handler.run_process(
@@ -105,8 +106,7 @@ def execute_task(testcase_id, job_type):
         state = crash_result.get_symbolized_data()
         security_flag = crash_result.is_security_issue()
 
-        if (not crash_analyzer.ignore_stacktrace(state.crash_state,
-                                                 state.crash_stacktrace) and
+        if (not crash_analyzer.ignore_stacktrace(state.crash_stacktrace) and
             security_flag == testcase.security_flag and
             state.crash_type == testcase.crash_type and
             (state.crash_type != sym_crash_type or
@@ -162,7 +162,7 @@ def execute_task(testcase_id, job_type):
     data_handler.update_testcase_comment(
         testcase, data_types.TaskState.ERROR,
         'Unable to reproduce crash, skipping '
-        'stacktrace update.')
+        'stacktrace update')
   else:
     # Switch build url to use the less-optimized symbolized build with better
     # stacktrace.
@@ -207,9 +207,9 @@ def get_symbolized_stacktraces(testcase_file_path, testcase,
   # Symbolize using the debug build first so that the debug build stacktrace
   # comes after the more important release build stacktrace.
   if app_path_debug:
-    for _ in xrange(retry_limit):
+    for _ in range(retry_limit):
       process_handler.terminate_stale_application_instances()
-      command = tests.get_command_line_for_application(
+      command = testcase_manager.get_command_line_for_application(
           testcase_file_path,
           app_path=app_path_debug,
           needs_http=testcase.http_flag)
@@ -221,8 +221,7 @@ def get_symbolized_stacktraces(testcase_file_path, testcase,
       if crash_result.is_crash():
         state = crash_result.get_symbolized_data()
 
-        if crash_analyzer.ignore_stacktrace(state.crash_state,
-                                            state.crash_stacktrace):
+        if crash_analyzer.ignore_stacktrace(state.crash_stacktrace):
           continue
 
         unsymbolized_crash_stacktrace = crash_result.get_stacktrace(
@@ -237,9 +236,9 @@ def get_symbolized_stacktraces(testcase_file_path, testcase,
 
   # Symbolize using the release build.
   if app_path:
-    for _ in xrange(retry_limit):
+    for _ in range(retry_limit):
       process_handler.terminate_stale_application_instances()
-      command = tests.get_command_line_for_application(
+      command = testcase_manager.get_command_line_for_application(
           testcase_file_path, app_path=app_path, needs_http=testcase.http_flag)
       return_code, crash_time, output = (
           process_handler.run_process(
@@ -249,8 +248,7 @@ def get_symbolized_stacktraces(testcase_file_path, testcase,
       if crash_result.is_crash():
         state = crash_result.get_symbolized_data()
 
-        if crash_analyzer.ignore_stacktrace(state.crash_state,
-                                            state.crash_stacktrace):
+        if crash_analyzer.ignore_stacktrace(state.crash_stacktrace):
           continue
 
         if state.crash_state != expected_state:

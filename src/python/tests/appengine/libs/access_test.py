@@ -16,13 +16,13 @@
 import mock
 import unittest
 
-from google.appengine.api import users
-
 from datastore import data_types
-from issue_management import issue
-from issue_management import issue_tracker_manager
 from libs import access
+from libs import auth
 from libs import helpers
+from libs.issue_management import monorail
+from libs.issue_management.monorail import issue
+from libs.issue_management.monorail import issue_tracker_manager
 from tests.test_libs import helpers as test_helpers
 from tests.test_libs import test_utils
 
@@ -108,14 +108,14 @@ class GetAccessTest(unittest.TestCase):
 
   def setUp(self):
     test_helpers.patch(self, [
-        'google.appengine.api.users.get_current_user',
-        'google.appengine.api.users.is_current_user_admin',
+        'libs.auth.get_current_user',
+        'libs.auth.is_current_user_admin',
         'libs.access._is_privileged_user',
         'libs.access._is_domain_allowed',
         'base.external_users.is_fuzzer_allowed_for_user',
         'base.external_users.is_job_allowed_for_user',
     ])
-    self.user = users.User('test@test.com', _auth_domain='test')
+    self.user = auth.User('test@test.com')
 
   def test_get_access_access_redirect(self):
     """Ensure it redirects when user is None."""
@@ -214,45 +214,58 @@ class HasAccessTest(unittest.TestCase):
     self.mock.get_access.assert_has_calls([mock.call(True, 'a', 'b')])
 
 
+@test_utils.with_cloud_emulators('datastore')
 class CanUserAccessTestcaseTest(unittest.TestCase):
   """Test can_user_access_testcase."""
 
   def setUp(self):
     test_helpers.patch(self, [
         'libs.access._is_domain_allowed',
-        'libs.access.has_access',
-        'libs.helpers.get_user_email',
+        'libs.auth.get_current_user',
         'config.db_config.get',
-        'issue_management.issue_tracker_utils.get_issue_tracker_manager',
-        'issue_management.issue_tracker_manager.IssueTrackerManager',
+        'libs.issue_management.issue_tracker.IssueTracker.get_original_issue',
+        'libs.issue_management.issue_tracker_utils.'
+        'get_issue_tracker_for_testcase',
+        'libs.issue_management.monorail.issue_tracker_manager.'
+        'IssueTrackerManager',
     ])
-    itm = issue_tracker_manager.IssueTrackerManager('test')
-    self.mock.get_issue_tracker_manager.return_value = itm
-    self.get_issue = itm.get_issue
+    self.itm = issue_tracker_manager.IssueTrackerManager('test')
+    self.itm.project_name = 'test-project'
+    self.mock.get_issue_tracker_for_testcase.return_value = (
+        monorail.IssueTracker(self.itm))
+    self.get_issue = self.itm.get_issue
 
     self.email = 'test@test.com'
-    self.mock.get_user_email.return_value = self.email
+    self.mock.get_current_user.return_value = auth.User(self.email)
 
     self.bug = issue.Issue()
+    self.bug.id = 1234
+    self.bug.itm = self.itm
+    self.original_bug = issue.Issue()
+    self.original_bug.id = 5678
+    self.original_bug.itm = self.itm
+
     self.testcase = data_types.Testcase()
+
     self.mock.get.return_value = (
         data_types.Config(relax_testcase_restrictions=True))
+    self.mock._is_domain_allowed.return_value = False
 
   def test_allowed(self):
     """Ensure it is true when check_user_access allows for a specific
        job_type."""
-    self.mock.has_access.return_value = True
+    data_types.ExternalUserPermission(
+        email=self.email,
+        entity_name='job',
+        entity_kind=data_types.PermissionEntityKind.JOB,
+        auto_cc=data_types.AutoCCType.ALL).put()
+
     self.testcase.job_type = 'job'
     self.testcase.fuzzer_name = 'fuzzer'
     self.testcase.security_flag = True
     self.assertTrue(access.can_user_access_testcase(self.testcase))
-    self.mock.has_access.assert_has_calls([
-        mock.call(
-            fuzzer_name='fuzzer', job_type='job', need_privileged_access=True)
-    ])
 
   def _test_bug_access(self):
-    self.mock.has_access.return_value = False
     self.get_issue.return_value = self.bug
 
     self.testcase.bug_information = '1234'
@@ -262,8 +275,6 @@ class CanUserAccessTestcaseTest(unittest.TestCase):
 
   def test_no_bug(self):
     """Ensure it is false when there's no bug."""
-    self.mock.has_access.return_value = False
-
     self.testcase.bug_information = ''
     self.assertFalse(access.can_user_access_testcase(self.testcase))
 
@@ -271,7 +282,6 @@ class CanUserAccessTestcaseTest(unittest.TestCase):
 
   def test_invalid_bug(self):
     """Ensure it is false when testcase's bug is invalid."""
-    self.mock.has_access.return_value = False
     self.get_issue.return_value = None
 
     self.testcase.bug_information = '1234'
@@ -300,7 +310,6 @@ class CanUserAccessTestcaseTest(unittest.TestCase):
 
     self.testcase.bug_information = None
     self.testcase.group_bug_information = 1234
-    self.mock.has_access.return_value = False
 
     self.assertTrue(access.can_user_access_testcase(self.testcase))
     self.get_issue.assert_has_calls([mock.call(1234)])
@@ -314,6 +323,7 @@ class CanUserAccessTestcaseTest(unittest.TestCase):
     """Ensure it is true when user has bug access and user's email is on the
       domain list but the relaxation is not enabled."""
     self.mock._is_domain_allowed.return_value = True
+    self.testcase.security_flag = True
     self.mock.get.return_value = (
         data_types.Config(relax_testcase_restrictions=False))
     self.bug.add_cc(self.email)
@@ -321,18 +331,48 @@ class CanUserAccessTestcaseTest(unittest.TestCase):
 
   def test_allowed_because_of_uploader(self):
     """Ensure it is allowed because the user is the uploader."""
-    self.mock.has_access.return_value = False
-    self.mock._is_domain_allowed.return_value = False
     self.testcase.uploader_email = 'test@test.com'
     self.testcase.security_flag = True
 
     self.assertTrue(access.can_user_access_testcase(self.testcase))
 
-  def test_deny_no_access(self):
+  def test_allowed_because_of_owner_in_original_issue(self):
+    """Ensure it is allowed because the user is the owner of original issue."""
+    self.bug.merged_into = 5678
+    self.bug.merged_into_project = 'test-project'
+    self.original_bug.owner = self.email
+    self.mock.get_original_issue.return_value = monorail.Issue(
+        self.original_bug)
+    self._test_bug_access()
+
+    self.mock.get.return_value = (
+        data_types.Config(relax_testcase_restrictions=False))
+    self._test_bug_access()
+
+  def test_allowed_security_bug_access_for_domain_user(self):
+    """Ensure that a domain user can access a security bug if restrictions
+    are relaxed in configuration."""
+    self.mock._is_domain_allowed.return_value = True
+    self.testcase.security_flag = True
+    self.mock.get.return_value = (
+        data_types.Config(relax_security_bug_restrictions=True))
+
+    self.assertTrue(access.can_user_access_testcase(self.testcase))
+
+  def test_denied_security_bug_access_for_domain_user(self):
+    """Ensure that a domain user can't access a security bug in default
+    configuration."""
+    self.mock._is_domain_allowed.return_value = True
+    self.testcase.security_flag = True
+    self.mock.get.return_value = (
+        data_types.Config(relax_security_bug_restrictions=False))
+
+    self.assertFalse(access.can_user_access_testcase(self.testcase))
+
+  def test_denied_no_access(self):
     """Ensure it is false when user has bug access but the relaxation is not
       enabled and user's email is not on the allowed domain list."""
     self.mock._is_domain_allowed.return_value = False
-    self.mock.has_access.return_value = False
     self.mock.get.return_value = (
         data_types.Config(relax_testcase_restrictions=False))
     self.testcase.bug_information = '1234'
@@ -345,10 +385,11 @@ class CanUserAccessTestcaseTest(unittest.TestCase):
     self.assertFalse(access.can_user_access_testcase(self.testcase))
 
   def test_deny_no_access_and_no_bug_access(self):
-    """Ensure it is false when everything is checked."""
+    """Ensure it is false when user has no access and no bug access."""
     self.mock._is_domain_allowed.return_value = False
-    self.mock.has_access.return_value = False
-    self.get_issue.return_value = issue.Issue()
+    test_issue = issue.Issue()
+    test_issue.itm = self.itm
+    self.get_issue.return_value = test_issue
 
     self.testcase.bug_information = '1234'
     self.assertFalse(access.can_user_access_testcase(self.testcase))

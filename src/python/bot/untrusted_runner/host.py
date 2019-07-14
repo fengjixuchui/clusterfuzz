@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Trusted host."""
+from __future__ import absolute_import
 
+from builtins import object
+from builtins import range
 import sys
 import threading
 import time
@@ -31,7 +34,7 @@ from protos import untrusted_runner_pb2
 from protos import untrusted_runner_pb2_grpc
 from system import environment
 
-import config
+from . import config
 
 WAIT_TLS_CERT_SECONDS = 60
 RPC_FAIL_WAIT_TIME = 10
@@ -125,7 +128,7 @@ def _wrap_call(func, num_retries=config.RPC_RETRY_ATTEMPTS):
 
   def wrapped(*args, **kwargs):
     """Wrapper for adding retry logic."""
-    for retry_attempt in xrange(num_retries + 1):
+    for retry_attempt in range(num_retries + 1):
       # Wait for channel to (re)connect if necessary.
       state = _check_channel_state(config.RECONNECT_TIMEOUT_SECONDS)
 

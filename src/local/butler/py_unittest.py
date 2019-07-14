@@ -12,21 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """py_unittest.py runs tests under src/appengine and butler/tests"""
+from __future__ import print_function
+from future import standard_library
+standard_library.install_aliases()
+from builtins import object
+from builtins import range
 import coverage
 
 # Coverage needs to be at the top of the page. See: go/why-top-cov
 COV = coverage.Coverage(config_file='.coveragerc')
 COV.start()
 
+import io
 import itertools
 import logging
 import multiprocessing
 import os
 import platform
 import signal
-import StringIO
 import sys
 import time
+import traceback
 import unittest
 
 from local.butler import appengine
@@ -76,7 +82,7 @@ class TrackedTestRunner(unittest.TextTestRunner):
 
     self.stream.writeln('\nSlow tests:')
     for elapsed_time, test_name in sorted(result.slow_tests, reverse=True):
-      print '%6.2fs: %s' % (elapsed_time, test_name)
+      print('%6.2fs: %s' % (elapsed_time, test_name))
 
     return result
 
@@ -90,7 +96,7 @@ class MeasureCoverage(object):
   def __enter__(self):
     pass
 
-  def __exit__(self, exc_type, value, traceback):
+  def __exit__(self, exc_type, value, _):
     COV.stop()
 
     if not self.enabled:
@@ -99,8 +105,8 @@ class MeasureCoverage(object):
     COV.html_report(directory='coverage')
 
     print('The tests cover %0.2f%% of the source code.' %
-          COV.report(file=StringIO.StringIO()))
-    print 'The test coverage by lines can be seen at ./coverage/index.html'
+          COV.report(file=io.BytesIO()))
+    print('The test coverage by lines can be seen at ./coverage/index.html')
 
 
 class TestResult(object):
@@ -123,28 +129,35 @@ def test_worker_init():
 
 def run_one_test_parallel(args):
   """Test worker."""
-  os.environ['PARALLEL_TESTS'] = '1'
+  try:
+    os.environ['PARALLEL_TESTS'] = '1'
 
-  test_modules, suppress_output = args
-  suite = unittest.loader.TestLoader().loadTestsFromNames(test_modules)
+    test_modules, suppress_output = args
+    suite = unittest.loader.TestLoader().loadTestsFromNames(test_modules)
 
-  stream = StringIO.StringIO()
+    # We use BufferedWriter as a hack to accept both unicode and str write
+    # arguments.
+    stream = io.BufferedWriter(io.BytesIO())
 
-  # Verbosity=0 since we cannot see real-time test execution order when tests
-  # are executed in parallel.
-  result = unittest.TextTestRunner(
-      stream=stream, verbosity=0, buffer=suppress_output).run(suite)
+    # Verbosity=0 since we cannot see real-time test execution order when tests
+    # are executed in parallel.
+    result = unittest.TextTestRunner(
+        stream=stream, verbosity=0, buffer=suppress_output).run(suite)
 
-  return TestResult(stream.getvalue(), len(result.errors), len(result.failures),
-                    len(result.skipped), result.testsRun)
+    stream.flush()
+    return TestResult(stream.raw.getvalue(), len(result.errors),
+                      len(result.failures), len(result.skipped),
+                      result.testsRun)
+  except BaseException:
+    # Print exception traceback here, as it will be lost otherwise.
+    traceback.print_exc()
+    raise
 
 
-def run_tests_single_core(args, test_directory, enable_coverage):
+def run_tests_single_core(args, test_directory, top_level_dir, enable_coverage):
   """Run tests (single CPU)."""
   suites = unittest.loader.TestLoader().discover(
-      test_directory,
-      pattern=args.pattern,
-      top_level_dir=os.path.join('src', 'python'))
+      test_directory, pattern=args.pattern, top_level_dir=top_level_dir)
 
   with MeasureCoverage(enable_coverage):
     # Verbosity=2 since we want to see real-time test execution with test name
@@ -156,12 +169,10 @@ def run_tests_single_core(args, test_directory, enable_coverage):
     sys.exit(1)
 
 
-def run_tests_parallel(args, test_directory):
+def run_tests_parallel(args, test_directory, top_level_dir):
   """Run tests (multiple CPUs)."""
   suites = unittest.loader.TestLoader().discover(
-      test_directory,
-      pattern=args.pattern,
-      top_level_dir=os.path.join('src', 'python'))
+      test_directory, pattern=args.pattern, top_level_dir=top_level_dir)
 
   test_classes = []  # pylint: disable=protected-access
   for suite in suites:
@@ -191,8 +202,8 @@ def run_tests_parallel(args, test_directory):
   # partition tests
   test_args = []
 
-  tests_per_cpu = max(1, len(test_modules) / cpu_count)
-  for i in xrange(0, len(test_modules), tests_per_cpu):
+  tests_per_cpu = max(1, len(test_modules) // cpu_count)
+  for i in range(0, len(test_modules), tests_per_cpu):
     group = test_modules[i:i + tests_per_cpu]
     test_args.append((group, not args.unsuppress_output))
 
@@ -213,16 +224,16 @@ def run_tests_parallel(args, test_directory):
 
   for result in results:
     if result.num_failures or result.num_errors:
-      print result.output
+      print(result.output)
 
     total_result.num_errors += result.num_errors
     total_result.num_failures += result.num_failures
     total_result.num_skipped += result.num_skipped
     total_result.total_run += result.total_run
 
-  print 'Ran %d tests (%d skipped, %d errors, %d failures).' % (
-      total_result.total_run, total_result.num_skipped, total_result.num_errors,
-      total_result.num_failures)
+  print('Ran %d tests (%d skipped, %d errors, %d failures).' %
+        (total_result.total_run, total_result.num_skipped,
+         total_result.num_errors, total_result.num_failures))
 
   if total_result.num_errors or total_result.num_failures:
     sys.exit(1)
@@ -235,15 +246,11 @@ def execute(args):
 
   if os.getenv('INTEGRATION') or os.getenv('UNTRUSTED_RUNNER_TESTS'):
     # Set up per-user buckets used by integration tests.
-    os.environ['BLOBS_BUCKET_FOR_TESTING'] = common.blobs_bucket_for_user()
-    os.environ['CORPUS_BUCKET'] = common.create_user_bucket(
-        'clusterfuzz-corpus')
-    os.environ['QUARANTINE_BUCKET'] = common.create_user_bucket(
-        'clusterfuzz-quarantine')
-    os.environ['BACKUP_BUCKET'] = common.create_user_bucket(
-        'clusterfuzz-backup')
-    os.environ['COVERAGE_BUCKET'] = common.create_user_bucket(
-        'clusterfuzz-coverage')
+    os.environ['CORPUS_BUCKET'] = common.test_bucket('TEST_CORPUS_BUCKET')
+    os.environ['QUARANTINE_BUCKET'] = common.test_bucket(
+        'TEST_QUARANTINE_BUCKET')
+    os.environ['BACKUP_BUCKET'] = common.test_bucket('TEST_BACKUP_BUCKET')
+    os.environ['COVERAGE_BUCKET'] = common.test_bucket('TEST_COVERAGE_BUCKET')
 
   # Kill leftover instances of emulators and dev appserver.
   common.kill_leftover_emulators()
@@ -251,6 +258,7 @@ def execute(args):
   # Don't use absolute paths to make it easier to compare results in tests.
   os.environ['CONFIG_DIR_OVERRIDE'] = os.path.join('.', 'configs', 'test')
 
+  top_level_dir = os.path.join('src', 'python')
   if args.target == 'appengine':
     # Build template files.
     appengine.build_templates()
@@ -269,9 +277,21 @@ def execute(args):
       from src.appengine import appengine_config
       (appengine_config)  # pylint: disable=pointless-statement
     except ImportError:
-      print 'Note: unable to import appengine_config.'
-  else:
+      print('Note: unable to import appengine_config.')
+  elif args.target == 'core':
     test_directory = CORE_TEST_DIRECTORY
+  else:
+    # Config module tests.
+    os.environ['CONFIG_DIR_OVERRIDE'] = args.config_dir
+    test_directory = os.path.join(args.config_dir, 'modules')
+    top_level_dir = None
+
+    # Modules may use libs from our App Engine directory.
+    sys.path.insert(0, os.path.abspath(os.path.join('src', 'appengine')))
+
+    # Fix paths again to get config modules added to the import path.
+    from python.base import modules
+    modules.fix_module_search_paths()
 
   # Set expected environment variables.
   local_config.ProjectConfig().set_environment()
@@ -291,6 +311,6 @@ def execute(args):
 
   if args.parallel:
     # TODO(tanin): Support coverage.
-    run_tests_parallel(args, test_directory)
+    run_tests_parallel(args, test_directory, top_level_dir)
   else:
-    run_tests_single_core(args, test_directory, enable_coverage)
+    run_tests_single_core(args, test_directory, top_level_dir, enable_coverage)

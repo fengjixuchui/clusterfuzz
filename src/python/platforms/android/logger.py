@@ -12,19 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """System log manager related functions."""
+from __future__ import absolute_import
 
-import adb
 import re
 
-LOG_RETRIES = 2
+from . import adb
+
+from metrics import logs
 
 
 def clear_log():
   """Clear log."""
-  retries = LOG_RETRIES
+  retries = 2
   while retries:
     # Try clearing the log.
-    adb.run_adb_command('logcat -c')
+    adb.run_command('logcat -c')
 
     # Check if the log is cleared. If yes, we can return. Otherwise, we retry
     # by continuing the loop.
@@ -36,12 +38,16 @@ def clear_log():
 
 def is_line_valid(line):
   """Returns true if we consider this line in logs."""
-  contain_url = 'NotifyBeforeURLRequest' in line
-  # Discard noisy debug/verbose output.
+  if re.match(r'^[-]+ beginning of', line):
+    return False
+
+  is_chromium_resource_load = 'NotifyBeforeURLRequest' in line
+
+  # Discard noisy debug and verbose output.
   # http://developer.android.com/tools/debugging/debugging-log.html.
   at_least_info_level = not (line.startswith('D/') or line.startswith('V/'))
 
-  return contain_url or at_least_info_level
+  return is_chromium_resource_load or at_least_info_level
 
 
 def filter_log_output(output):
@@ -50,17 +56,22 @@ def filter_log_output(output):
     return ''
 
   filtered_output = ''
-  last_process_id = 0
+  last_process_tuple = (None, None)
   for line in output.splitlines():
-    line = line.strip()
     if not is_line_valid(line):
       continue
 
-    m_line = re.match('[^D]/([^:]+)[:] (.*)', line)
+    # To parse frames like:
+    # E/v8      (18890): Error installing extension 'v8/LoadTimes'.
+    # {log_level}/{process_name}({process_id}): {message}
+    m_line = re.match(r'^[VDIWEFS]/([^(]+)\(\s*(\d+)\)[:](.*)$', line)
     if not m_line:
+      logs.log_error('Failed to parse logcat line: %s' % line)
       continue
 
-    filtered_line = m_line.group(2)
+    process_name = m_line.group(1).strip()
+    process_id = int(m_line.group(2))
+    filtered_line = m_line.group(3).rstrip()[1:]
 
     # Process Android crash stack frames and convert into sanitizer format.
     m_crash_state = re.match(r'\s*#([0-9]+)\s+pc\s+([xX0-9a-fA-F]+)\s+(.+)',
@@ -100,13 +111,10 @@ def filter_log_output(output):
                                             frame_binary_and_address))
 
     # Add process number if changed.
-    m_process_num = re.match(r'(.*)[(]\s*(\d+)[)]', m_line.group(1))
-    if m_process_num:
-      process_id = int(m_process_num.group(2))
-      if process_id != last_process_id:
-        process_name = (m_process_num.group(1)).strip()
-        filtered_output += '--------- %s (%d):\n' % (process_name, process_id)
-        last_process_id = process_id
+    current_process_tuple = (process_name, process_id)
+    if current_process_tuple != last_process_tuple:
+      filtered_output += '--------- %s (%d):\n' % (process_name, process_id)
+      last_process_tuple = current_process_tuple
 
     filtered_output += filtered_line + '\n'
 
@@ -115,7 +123,7 @@ def filter_log_output(output):
 
 def log_output(additional_flags=''):
   """Return log data without noise and some normalization."""
-  output = adb.run_adb_command('logcat -d -v brief %s *:V' % additional_flags)
+  output = adb.run_command('logcat -d -v brief %s *:V' % additional_flags)
   return filter_log_output(output)
 
 

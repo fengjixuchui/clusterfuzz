@@ -73,6 +73,7 @@ def copy_yamls_and_preprocess(paths):
     if os.path.exists(rebased_path):
       os.remove(rebased_path)
     shutil.copy(path, rebased_path)
+    os.chmod(rebased_path, 0o600)
 
     _add_env_vars_if_needed(rebased_path)
     rebased_paths.append(rebased_path)
@@ -119,7 +120,11 @@ def symlink_dirs():
   common.symlink(
       src=os.path.join('src', 'python'),
       target=os.path.join(SRC_DIR_PY, 'python'))
-  common.symlink(
+  # While importing third party modules, we may call pkg_resources.
+  # pkg_resources normalizes paths by calling os.path.realpath on them, which is
+  # incompatible with the App Engine sandbox since the resulting path will no
+  # longer be under appengine/.
+  common.copy_dir(
       src=os.path.join('src', 'third_party'),
       target=os.path.join(SRC_DIR_PY, 'third_party'))
 
@@ -130,16 +135,13 @@ def symlink_dirs():
   if os.path.exists(local_gcs_symlink_path):
     os.remove(local_gcs_symlink_path)
 
-  _, output = common.execute(
-      'bazel run //local:create_gopath 2>/dev/null', cwd='src')
-  os.environ['GOPATH'] = output.strip()
+  _, output = common.execute('bazel run //local:create_gopath', cwd='src')
+  os.environ['GOPATH'] = output.splitlines()[-1]
 
 
 def build_templates():
   """Build template files used in appengine."""
-  local_dir = os.path.join(
-      os.path.dirname(__file__), os.pardir, os.pardir, os.pardir, 'local')
-  common.execute('./polymer_bundler.bash', cwd=local_dir)
+  common.execute('python polymer_bundler.py', cwd='local')
 
 
 def symlink_config_dir():

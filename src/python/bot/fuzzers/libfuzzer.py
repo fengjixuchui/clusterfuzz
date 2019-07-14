@@ -12,19 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """libFuzzer runners."""
+from __future__ import print_function
 
+from builtins import object
 import copy
 import os
 import shutil
 
-import engine_common
-
+from base import retry
+from bot.fuzzers import engine_common
+from bot.fuzzers.libFuzzer import constants
+from platforms import fuchsia
+from platforms.fuchsia.util.device import Device
+from platforms.fuchsia.util.fuzzer import Fuzzer
+from platforms.fuchsia.util.host import Host
 from system import environment
 from system import minijail
 from system import new_process
 from system import shell
-
-from libFuzzer import constants
 
 MAX_OUTPUT_LEN = 1 * 1024 * 1024  # 1 MB
 
@@ -104,7 +109,8 @@ class LibFuzzerCommon(object):
            corpus_directories,
            fuzz_timeout,
            artifact_prefix=None,
-           additional_args=None):
+           additional_args=None,
+           extra_env=None):
     """Running fuzzing command.
 
     Args:
@@ -116,6 +122,8 @@ class LibFuzzerCommon(object):
           timeouts, slow units)
       additional_args: A sequence of additional arguments to be passed to the
           executable.
+      extra_env: A dictionary containing environment variables and their values.
+          These will be added to the environment of the new process.
 
     Returns:
       A process.ProcessResult.
@@ -147,7 +155,8 @@ class LibFuzzerCommon(object):
         timeout=fuzz_timeout - self.SIGTERM_WAIT_TIME,
         terminate_before_kill=True,
         terminate_wait_time=self.SIGTERM_WAIT_TIME,
-        max_stdout_len=MAX_OUTPUT_LEN)
+        max_stdout_len=MAX_OUTPUT_LEN,
+        extra_env=extra_env)
 
   def merge(self,
             corpus_directories,
@@ -181,17 +190,16 @@ class LibFuzzerCommon(object):
           '%s%s' % (constants.ARTIFACT_PREFIX_FLAG,
                     self._normalize_artifact_prefix(artifact_prefix)))
 
-    env = None
+    extra_env = {}
     if tmp_dir:
-      env = os.environ.copy()
-      env['TMPDIR'] = tmp_dir
+      extra_env['TMPDIR'] = tmp_dir
 
     additional_args.extend(corpus_directories)
     return self.run_and_wait(
         additional_args=additional_args,
         timeout=merge_timeout,
         max_stdout_len=MAX_OUTPUT_LEN,
-        env=env)
+        extra_env=extra_env)
 
   def run_single_testcase(self,
                           testcase_path,
@@ -241,7 +249,7 @@ class LibFuzzerCommon(object):
     # individual runs of the target and not for the entire minimization.
     # Internally, libFuzzer does 2 runs of the target every iteration. This is
     # the minimum for any results to be written at all.
-    max_total_time_value = (timeout - self.LIBFUZZER_CLEAN_EXIT_TIME) / 2
+    max_total_time_value = (timeout - self.LIBFUZZER_CLEAN_EXIT_TIME) // 2
     max_total_time_argument = '%s%d' % (constants.MAX_TOTAL_TIME_FLAG,
                                         max_total_time_value)
 
@@ -309,14 +317,95 @@ class LibFuzzerRunner(new_process.ProcessRunner, LibFuzzerCommon):
            corpus_directories,
            fuzz_timeout,
            artifact_prefix=None,
-           additional_args=None):
+           additional_args=None,
+           extra_env=None):
     """LibFuzzerCommon.fuzz override."""
     additional_args = copy.copy(additional_args)
     if additional_args is None:
       additional_args = []
 
     return LibFuzzerCommon.fuzz(self, corpus_directories, fuzz_timeout,
-                                artifact_prefix, additional_args)
+                                artifact_prefix, additional_args, extra_env)
+
+
+class FuchsiaQemuLibFuzzerRunner(new_process.ProcessRunner, LibFuzzerCommon):
+  """libFuzzer runner (when Fuchsia is the target platform)."""
+
+  FUCHSIA_BUILD_REL_PATH = os.path.join('build', 'out', 'default')
+
+  SSH_RETRIES = 3
+  SSH_WAIT = 2
+
+  def __init__(self, executable_path, default_args=None):
+    fuchsia_pkey_path = environment.get_value('FUCHSIA_PKEY_PATH')
+    fuchsia_portnum = environment.get_value('FUCHSIA_PORTNUM')
+    fuchsia_resources_dir = environment.get_value('FUCHSIA_RESOURCES_DIR')
+    if (not fuchsia_pkey_path or not fuchsia_portnum or
+        not fuchsia_resources_dir):
+      raise fuchsia.errors.FuchsiaConfigError(
+          ('FUCHSIA_PKEY_PATH, FUCHSIA_PORTNUM, or FUCHSIA_RESOURCES_DIR was '
+           'not set'))
+    self.host = Host.from_dir(
+        os.path.join(fuchsia_resources_dir, self.FUCHSIA_BUILD_REL_PATH))
+    self.device = Device(self.host, 'localhost', fuchsia_portnum)
+    # Fuchsia fuzzer names have the format {package_name}/{binary_name}.
+    # TODO(ochang): Properly handle fuzzers with '/' in the binary name.
+    package, target = environment.get_value('FUZZ_TARGET').split('/')
+    self.fuzzer = Fuzzer(self.device, package, target)
+    self.device.set_ssh_option('StrictHostKeyChecking no')
+    self.device.set_ssh_option('UserKnownHostsFile=/dev/null')
+    self.device.set_ssh_identity(fuchsia_pkey_path)
+    super(FuchsiaQemuLibFuzzerRunner, self).__init__(
+        executable_path=executable_path, default_args=default_args)
+
+  def get_command(self, additional_args=None):
+    # TODO(flowerhack): Update this to dynamically pick a result from "fuzz
+    # list" and then run that fuzzer.
+    return self.ssh_command('ls')
+
+  def fuzz(self,
+           corpus_directories,
+           fuzz_timeout,
+           artifact_prefix=None,
+           additional_args=None,
+           extra_env=None):
+    """LibFuzzerCommon.fuzz override."""
+    self._test_qemu_ssh()
+    self.fuzzer.run([])
+    # TODO(flowerhack): Modify fuzzer.run() to return a ProcessResult, rather
+    # than artisinally handcrafting one here.
+    fuzzer_process_result = new_process.ProcessResult()
+    fuzzer_process_result.return_code = 0
+    fuzzer_process_result.output = ''
+    fuzzer_process_result.time_executed = 0
+    fuzzer_process_result.command = self.fuzzer.last_fuzz_cmd
+    return fuzzer_process_result
+
+  def run_single_testcase(self,
+                          testcase_path,
+                          timeout=None,
+                          additional_args=None):
+    # TODO(flowerhack): Fill out this command.
+    pass
+
+  def ssh_command(self, *args):
+    return ['ssh'] + self.ssh_root + list(args)
+
+  @retry.wrap(retries=SSH_RETRIES, delay=SSH_WAIT, function='_test_qemu_ssh')
+  def _test_qemu_ssh(self):
+    """Tests that a VM is up and can be successfully SSH'd into.
+    Raises an exception if no success after MAX_SSH_RETRIES."""
+    ssh_test_process = new_process.ProcessRunner(
+        'ssh',
+        self.device.get_ssh_cmd(
+            ['ssh', 'localhost', 'echo running on fuchsia!'])[1:])
+    result = ssh_test_process.run_and_wait()
+    if result.return_code or result.timed_out:
+      raise fuchsia.errors.FuchsiaConnectionError(
+          'Failed to establish initial SSH connection: ' +
+          str(result.return_code) + " , " + str(result.command) + " , " +
+          str(result.output))
+    return result
 
 
 class MinijailLibFuzzerRunner(engine_common.MinijailEngineFuzzerRunner,
@@ -383,11 +472,12 @@ class MinijailLibFuzzerRunner(engine_common.MinijailEngineFuzzerRunner,
            corpus_directories,
            fuzz_timeout,
            artifact_prefix=None,
-           additional_args=None):
+           additional_args=None,
+           extra_env=None):
     """LibFuzzerCommon.fuzz override."""
     corpus_directories = self._get_chroot_corpus_paths(corpus_directories)
     return LibFuzzerCommon.fuzz(self, corpus_directories, fuzz_timeout,
-                                artifact_prefix, additional_args)
+                                artifact_prefix, additional_args, extra_env)
 
   def merge(self,
             corpus_directories,
@@ -460,6 +550,7 @@ def get_runner(fuzzer_path, temp_dir=None):
   """Get a libfuzzer runner."""
   use_minijail = environment.get_value('USE_MINIJAIL')
   build_dir = environment.get_value('BUILD_DIR')
+  dataflow_build_dir = environment.get_value('DATAFLOW_BUILD_DIR')
   if use_minijail:
     # Set up chroot and runner.
     if environment.is_chromeos_system_job():
@@ -474,13 +565,17 @@ def get_runner(fuzzer_path, temp_dir=None):
     minijail_chroot.add_binding(
         minijail.ChrootBinding(build_dir, build_dir, False))
 
+    if dataflow_build_dir:
+      minijail_chroot.add_binding(
+          minijail.ChrootBinding(dataflow_build_dir, dataflow_build_dir, False))
+
     # Also bind the build dir to /out to make it easier to hardcode references
     # to data files.
     minijail_chroot.add_binding(
         minijail.ChrootBinding(build_dir, '/out', False))
 
     minijail_bin = os.path.join(minijail_chroot.directory, 'bin')
-    shell.create_directory_if_needed(minijail_bin)
+    shell.create_directory(minijail_bin)
 
     # Set up /bin with llvm-symbolizer to allow symbolized stacktraces.
     # Don't copy if it already exists (e.g. ChromeOS chroot jail).
@@ -497,6 +592,8 @@ def get_runner(fuzzer_path, temp_dir=None):
       shutil.copy(os.path.realpath('/bin/sh'), os.path.join(minijail_bin, 'sh'))
 
     runner = MinijailLibFuzzerRunner(fuzzer_path, minijail_chroot)
+  elif environment.platform() == 'FUCHSIA':
+    runner = FuchsiaQemuLibFuzzerRunner(fuzzer_path)
   else:
     runner = LibFuzzerRunner(fuzzer_path)
 

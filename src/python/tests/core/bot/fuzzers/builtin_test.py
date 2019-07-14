@@ -13,6 +13,7 @@
 # limitations under the License.
 """Tests fuzzers.builtin."""
 
+from builtins import range
 import os
 import parameterized
 import unittest
@@ -28,7 +29,7 @@ from tests.test_libs import test_utils
 class TestEngineFuzzer(builtin.EngineFuzzer):
   """A test engine fuzzer."""
 
-  def generate_arguments(self, *_):
+  def generate_arguments(self, *_):  # pylint: disable=arguments-differ
     return '-arg1 -arg2'
 
 
@@ -113,7 +114,7 @@ class EngineFuzzerTest(BaseEngineFuzzerTest):
   def _generate_targets_list(self, count):
     """Generate a targets list."""
     fake_targets_list = []
-    for i in xrange(count):
+    for i in range(count):
       fake_targets_list.append('/build_dir/target' + str(i))
 
     return fake_targets_list

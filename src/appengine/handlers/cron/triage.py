@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Automated bug filing."""
+from __future__ import absolute_import
 
 import datetime
 import itertools
 import json
 
-import grouper
+from . import grouper
 
 from base import dates
 from base import errors
@@ -26,9 +27,10 @@ from datastore import data_handler
 from datastore import data_types
 from datastore import ndb_utils
 from handlers import base_handler
-from issue_management import issue_filer
-from issue_management import issue_tracker_utils
 from libs import handler
+from libs.issue_management import issue_filer
+from libs.issue_management import issue_tracker_policy
+from libs.issue_management import issue_tracker_utils
 from metrics import crash_stats
 from metrics import logs
 
@@ -155,7 +157,7 @@ def is_crash_important(testcase):
           data_types.FILE_UNREPRODUCIBLE_TESTCASE_MIN_CRASH_THRESHOLD)
 
 
-def is_similar_bug_open_or_recently_closed(testcase, issue_tracker_manager):
+def is_similar_bug_open_or_recently_closed(testcase, issue_tracker):
   """Get list of similar open issues and ones that were recently closed."""
   # Get similar testcases from the same group.
   similar_testcases_from_group = []
@@ -163,7 +165,7 @@ def is_similar_bug_open_or_recently_closed(testcase, issue_tracker_manager):
     group_query = data_types.Testcase.query(
         data_types.Testcase.group_id == testcase.group_id)
     similar_testcases_from_group = ndb_utils.get_all_from_query(
-        group_query, batch_size=data_types.TESTCASE_ENTITY_QUERY_LIMIT / 2)
+        group_query, batch_size=data_types.TESTCASE_ENTITY_QUERY_LIMIT // 2)
 
   # Get testcases with the same crash params. These might not be in the a group
   # if they were just fixed.
@@ -176,7 +178,7 @@ def is_similar_bug_open_or_recently_closed(testcase, issue_tracker_manager):
 
   similar_testcases_from_query = ndb_utils.get_all_from_query(
       same_crash_params_query,
-      batch_size=data_types.TESTCASE_ENTITY_QUERY_LIMIT / 2)
+      batch_size=data_types.TESTCASE_ENTITY_QUERY_LIMIT // 2)
 
   for similar_testcase in itertools.chain(similar_testcases_from_group,
                                           similar_testcases_from_query):
@@ -189,7 +191,7 @@ def is_similar_bug_open_or_recently_closed(testcase, issue_tracker_manager):
       continue
 
     # Get the issue object given its ID.
-    issue = issue_tracker_manager.get_issue(similar_testcase.bug_information)
+    issue = issue_tracker.get_issue(similar_testcase.bug_information)
     if not issue:
       continue
 
@@ -200,18 +202,19 @@ def is_similar_bug_open_or_recently_closed(testcase, issue_tracker_manager):
       return True
 
     # If the issue is still open, no need to file a duplicate bug.
-    if issue.open:
+    if issue.is_open:
       return True
 
     # If the issue indicates that this crash needs to be ignored, no need to
     # file another one.
-    if issue.has_label(data_types.ISSUE_IGNORE_LABEL):
+    policy = issue_tracker_policy.get(issue_tracker.project)
+    if policy.label('ignore') in issue.labels:
       return True
 
     # If the issue is recently closed, wait certain time period to make sure
     # our fixed verification has completed.
-    if (issue.closed and not dates.time_has_expired(
-        issue.closed,
+    if (issue.closed_time and not dates.time_has_expired(
+        issue.closed_time,
         compare_to=datetime.datetime.utcnow(),
         hours=data_types.MIN_ELAPSED_TIME_SINCE_FIXED)):
       return True
@@ -248,6 +251,10 @@ class Handler(base_handler.Handler):
       if testcase.job_type in excluded_jobs:
         continue
 
+      # Skip if we are running progression task at this time.
+      if testcase.get_metadata('progression_pending'):
+        continue
+
       # If the testcase has a bug filed already, no triage is needed.
       if is_bug_filed(testcase):
         continue
@@ -272,19 +279,18 @@ class Handler(base_handler.Handler):
 
       # If this project does not have an associated issue tracker, we cannot
       # file this crash anywhere.
-      issue_tracker_manager = issue_tracker_utils.get_issue_tracker_manager(
-          testcase, use_cache=True)
-      if not issue_tracker_manager:
+      issue_tracker = issue_tracker_utils.get_issue_tracker_for_testcase(
+          testcase)
+      if not issue_tracker:
         continue
 
       # If there are similar issues to this test case already filed or recently
       # closed, skip filing a duplicate bug.
-      if is_similar_bug_open_or_recently_closed(testcase,
-                                                issue_tracker_manager):
+      if is_similar_bug_open_or_recently_closed(testcase, issue_tracker):
         continue
 
       # File the bug first and then create filed bug metadata.
-      issue_filer.file_issue(testcase, issue_tracker_manager)
+      issue_filer.file_issue(testcase, issue_tracker)
       create_filed_bug_metadata(testcase)
       logs.log('Filed new issue %s for testcase %d.' %
                (testcase.bug_information, testcase_id))

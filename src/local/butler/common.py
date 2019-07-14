@@ -15,18 +15,23 @@
    commands."""
 
 from __future__ import print_function
+from builtins import object
+from future import standard_library
+standard_library.install_aliases()
+from past.builtins import basestring
 
 import datetime
-import getpass
+import io
 import os
 import platform
 import shutil
-import StringIO
 import subprocess
 import sys
 import tempfile
-import urllib2
+import urllib.request
 import zipfile
+
+from distutils import dir_util
 
 from local.butler import constants
 
@@ -145,7 +150,10 @@ def execute(command,
     if print_output:
       print(s)
 
-  _print('Running: %s' % command)
+  print_string = 'Running: %s' % command
+  if cwd:
+    print_string += " (cwd='%s')" % cwd
+  _print(print_string)
 
   proc = execute_async(command, extra_environments, cwd=cwd)
   output = process_proc_output(proc, print_output)
@@ -177,11 +185,24 @@ def is_git_dirty():
   return output
 
 
+def get_chromedriver_path():
+  """Return path to chromedriver binary."""
+  if get_platform() == 'windows':
+    chromedriver_binary = 'chromedriver.exe'
+    binary_directory = 'Scripts'
+  else:
+    chromedriver_binary = 'chromedriver'
+    binary_directory = 'bin'
+
+  return os.path.join(os.environ['ROOT_DIR'], 'ENV', binary_directory,
+                      chromedriver_binary)
+
+
 def _install_chromedriver():
   """Install the latest chromedriver binary in the virtualenv."""
   # Download a file containing the version number of the latest release.
-  version_request = urllib2.urlopen(constants.CHROMEDRIVER_VERSION_URL)
-  version = version_request.read().strip()
+  version_request = urllib.request.urlopen(constants.CHROMEDRIVER_VERSION_URL)
+  version = version_request.read().decode()
 
   plt = get_platform()
   if plt == 'linux':
@@ -191,22 +212,19 @@ def _install_chromedriver():
   elif plt == 'windows':
     archive_name = 'chromedriver_win32.zip'
 
-  archive_request = urllib2.urlopen(
+  archive_request = urllib.request.urlopen(
       constants.CHROMEDRIVER_DOWNLOAD_PATTERN.format(
           version=version, archive_name=archive_name))
-  archive_io = StringIO.StringIO(archive_request.read())
+  archive_io = io.BytesIO(archive_request.read())
   chromedriver_archive = zipfile.ZipFile(archive_io)
 
-  binary_directory = 'bin'
-  chromedriver_binary = 'chromedriver'
-  if get_platform() == 'windows':
-    binary_directory = 'Scripts'
-    chromedriver_binary += '.exe'
-  output_directory = os.path.join(
-      os.path.dirname(__file__), '..', '..', '..', 'ENV', binary_directory)
+  chromedriver_path = get_chromedriver_path()
+  output_directory = os.path.dirname(chromedriver_path)
+  chromedriver_binary = os.path.basename(chromedriver_path)
 
   chromedriver_archive.extract(chromedriver_binary, output_directory)
-  os.chmod(os.path.join(output_directory, chromedriver_binary), 0750)
+  os.chmod(chromedriver_path, 0o750)
+  print('Installed chromedriver at: %s' % chromedriver_path)
 
 
 def _install_pip(requirements_path, target_path):
@@ -298,6 +316,17 @@ def symlink(src, target):
       src=src, target=target))
 
 
+def copy_dir(src, target):
+  """Copy directory."""
+  if os.path.islink(target):
+    os.remove(target)
+
+  if os.path.isdir(target):
+    shutil.rmtree(target, ignore_errors=True)
+
+  shutil.copytree(src, target)
+
+
 def has_file_in_path(filename):
   """Check to see if filename exists in the user's PATH."""
   path = os.getenv('PATH')
@@ -308,30 +337,12 @@ def has_file_in_path(filename):
   return False
 
 
-def blobs_bucket_for_user():
-  """Get the blobs bucket for the current user. Creates one if it doesn't not
-  exist."""
-  blobs_bucket = create_user_bucket('clusterfuzz-testing-blobs')
-  execute('gsutil cors set {cors_file_path} gs://{bucket}'.format(
-      cors_file_path=os.path.join('local', 'blobs_cors.json'),
-      bucket=blobs_bucket))
-
-  return blobs_bucket
-
-
-def test_bucket_for_user():
-  """Get the test bucket for the current user. Creates one if it doesn't not
-  exist."""
-  test_bucket = create_user_bucket('clusterfuzz-testing')
-  return test_bucket
-
-
-def create_user_bucket(bucket):
-  """Create a user-specific bucket for testing purposes."""
-  bucket += '-' + getpass.getuser()
-  execute(
-      'gsutil defstorageclass get gs://{bucket} || '
-      'gsutil mb -p clusterfuzz-testing gs://{bucket}'.format(bucket=bucket))
+def test_bucket(env_var):
+  """Get the integration test bucket."""
+  bucket = os.getenv(env_var)
+  if not bucket:
+    raise RuntimeError(
+        'You need to specify {var} for integration testing'.format(var=env_var))
 
   return bucket
 
@@ -353,3 +364,9 @@ def get_platform():
     return 'windows'
   else:
     raise Exception('Unknown platform: %s.' % platform.system())
+
+
+def update_dir(src_dir, dst_dir):
+  """Recursively copy from src_dir to dst_dir, replacing files but only if
+  they're newer or don't exist."""
+  dir_util.copy_tree(src_dir, dst_dir, update=True)

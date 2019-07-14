@@ -96,14 +96,6 @@ class SeverityAnalyzerTest(unittest.TestCase):
             self._read_test_data('asan_container_overflow_read.txt'), False),
         SecuritySeverity.HIGH)
 
-  def test_sanitizer_chrome_browser_uaf(self):
-    """Tests severity analysis of a use after free in the browser."""
-    self.assertEqual(
-        severity_analyzer.get_analyzer('sanitizer_chrome').analyze(
-            'Heap-use-after-free\nREAD 8',
-            self._read_test_data('asan_browser_uaf.txt'), False),
-        SecuritySeverity.CRITICAL)
-
   def test_sanitizer_chrome_renderer_uaf(self):
     """Tests severity analysis of a use after free in the renderer."""
     self.assertEqual(
@@ -188,3 +180,27 @@ class SeverityAnalyzerTest(unittest.TestCase):
             'Use-of-uninitialized-value',
             self._read_test_data('msan_browser.txt'), False),
         SecuritySeverity.MEDIUM)
+
+  def test_find_process_type_browser(self):
+    """Tests a browser process bug is recognized as such."""
+    self.assertEqual(
+        severity_analyzer.get_analyzer('sanitizer_chrome').analyze(
+            'Heap-use-after-free\nREAD 8',
+            self._read_test_data('browser_uaf.txt'), False),
+        SecuritySeverity.CRITICAL)
+
+  def test_find_process_type_browser_2(self):
+    """Tests a browser process bug is recognized as such (second variant)."""
+    self.assertEqual(
+        severity_analyzer.get_analyzer('sanitizer_chrome').analyze(
+            'Heap-use-after-free\nREAD 8',
+            self._read_test_data('browser_uaf2.txt'), False),
+        SecuritySeverity.CRITICAL)
+
+  def test_find_process_type_browser_3(self):
+    """Tests a browser process bug is recognized as such (third variant)."""
+    self.assertEqual(
+        severity_analyzer.get_analyzer('sanitizer_chrome').analyze(
+            'Heap-use-after-free\nREAD 8',
+            self._read_test_data('browser_uaf3.txt'), False),
+        SecuritySeverity.CRITICAL)

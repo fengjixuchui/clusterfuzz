@@ -1,0 +1,482 @@
+[
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,value_profile,recommended_dict,",
+    "bandit_weight": "0.033850786951462285",
+    "run_count": "587"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,recommended_dict,",
+    "bandit_weight": "0.03168990475186747",
+    "run_count": "1264"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,",
+    "bandit_weight": "0.030072238108676097",
+    "run_count": "14284"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,value_profile,",
+    "bandit_weight": "0.02632731536000997",
+    "run_count": "6962"
+  },
+  {
+    "strategy": "random_max_len,value_profile,",
+    "bandit_weight": "0.016531120389500133",
+    "run_count": "28875"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,",
+    "bandit_weight": "0.016421673681779686",
+    "run_count": "3875"
+  },
+  {
+    "strategy": "random_max_len,",
+    "bandit_weight": "0.01624010759024269",
+    "run_count": "58718"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,recommended_dict,",
+    "bandit_weight": "0.015459693483223728",
+    "run_count": "9993"
+  },
+  {
+    "strategy": "random_max_len,recommended_dict,",
+    "bandit_weight": "0.015332053005500376",
+    "run_count": "5015"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,value_profile,",
+    "bandit_weight": "0.014962499907161508",
+    "run_count": "1883"
+  },
+  {
+    "strategy": "random_max_len,value_profile,recommended_dict,",
+    "bandit_weight": "0.014819289771264796",
+    "run_count": "2562"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,recommended_dict,",
+    "bandit_weight": "0.014461112645285943",
+    "run_count": "319"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,value_profile,",
+    "bandit_weight": "0.014205849948751839",
+    "run_count": "53766"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,",
+    "bandit_weight": "0.014060236208125952",
+    "run_count": "109123"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,value_profile,recommended_dict,",
+    "bandit_weight": "0.013835428503607432",
+    "run_count": "4864"
+  },
+  {
+    "strategy": "value_profile,recommended_dict,",
+    "bandit_weight": "0.013136702330209492",
+    "run_count": "17043"
+  },
+  {
+    "strategy": "recommended_dict,",
+    "bandit_weight": "0.012928939247456927",
+    "run_count": "34948"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,value_profile,recommended_dict,",
+    "bandit_weight": "0.012769615839771313",
+    "run_count": "1060"
+  },
+  {
+    "strategy": "value_profile,",
+    "bandit_weight": "0.012643436468308426",
+    "run_count": "199992"
+  },
+  {
+    "strategy": "",
+    "bandit_weight": "0.012504125076865531",
+    "run_count": "406934"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,value_profile,recommended_dict,",
+    "bandit_weight": "0.012493573093599006",
+    "run_count": "160"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,recommended_dict,",
+    "bandit_weight": "0.011488800435499226",
+    "run_count": "2097"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,value_profile,",
+    "bandit_weight": "0.011461339543618105",
+    "run_count": "12459"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,",
+    "bandit_weight": "0.01101885784553913",
+    "run_count": "25737"
+  },
+  {
+    "strategy": "random_max_len,fork,",
+    "bandit_weight": "0.009715827287828301",
+    "run_count": "49245"
+  },
+  {
+    "strategy": "random_max_len,value_profile,fork,",
+    "bandit_weight": "0.00958990512957823",
+    "run_count": "24120"
+  },
+  {
+    "strategy": "value_profile,fork,",
+    "bandit_weight": "0.00957142364193173",
+    "run_count": "170139"
+  },
+  {
+    "strategy": "fork,",
+    "bandit_weight": "0.00952599055839738",
+    "run_count": "346196"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,fork,",
+    "bandit_weight": "0.00944736390813767",
+    "run_count": "3063"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,value_profile,fork,",
+    "bandit_weight": "0.009370100166600835",
+    "run_count": "1577"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,fork,",
+    "bandit_weight": "0.009284182841841168",
+    "run_count": "21036"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,value_profile,fork,",
+    "bandit_weight": "0.009212251973969748",
+    "run_count": "10723"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,fork,recommended_dict,",
+    "bandit_weight": "0.008976839509092614",
+    "run_count": "262"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,fork,",
+    "bandit_weight": "0.008945232954755147",
+    "run_count": "14185"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,value_profile,fork,recommended_dict,",
+    "bandit_weight": "0.008742504289773407",
+    "run_count": "138"
+  },
+  {
+    "strategy": "fork,recommended_dict,",
+    "bandit_weight": "0.008735857913895624",
+    "run_count": "30203"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,value_profile,fork,recommended_dict,",
+    "bandit_weight": "0.008713146308336328",
+    "run_count": "675"
+  },
+  {
+    "strategy": "random_max_len,fork,recommended_dict,",
+    "bandit_weight": "0.008708186872471334",
+    "run_count": "4215"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,fork,recommended_dict,",
+    "bandit_weight": "0.008623138051217685",
+    "run_count": "1815"
+  },
+  {
+    "strategy": "value_profile,fork,recommended_dict,",
+    "bandit_weight": "0.0086171146347404",
+    "run_count": "15023"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,fork,",
+    "bandit_weight": "0.008598047115941681",
+    "run_count": "109927"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,value_profile,fork,recommended_dict,",
+    "bandit_weight": "0.008574632874488525",
+    "run_count": "914"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,fork,recommended_dict,",
+    "bandit_weight": "0.00855181750446437",
+    "run_count": "1325"
+  },
+  {
+    "strategy": "random_max_len,value_profile,fork,recommended_dict,",
+    "bandit_weight": "0.008510626435212304",
+    "run_count": "2193"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,value_profile,fork,",
+    "bandit_weight": "0.008401421677066983",
+    "run_count": "54169"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,value_profile,fork,",
+    "bandit_weight": "0.008395747151472725",
+    "run_count": "6901"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,value_profile,fork,recommended_dict,",
+    "bandit_weight": "0.008387179348291356",
+    "run_count": "4682"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,fork,recommended_dict,",
+    "bandit_weight": "0.008365889519849238",
+    "run_count": "9586"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,fork,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "108312"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "25223"
+  },
+  {
+    "strategy": "corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "399175"
+  },
+  {
+    "strategy": "value_profile,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "195786"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "108062"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,value_profile,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "52634"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,fork,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "20935"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,value_profile,fork,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "10455"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,fork,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "9787"
+  },
+  {
+    "strategy": "value_profile,fork,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "167257"
+  },
+  {
+    "strategy": "fork,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "339590"
+  },
+  {
+    "strategy": "fork,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "29871"
+  },
+  {
+    "strategy": "value_profile,fork,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "14728"
+  },
+  {
+    "strategy": "corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "34619"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,value_profile,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "4848"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "9740"
+  },
+  {
+    "strategy": "value_profile,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "16864"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,value_profile,fork,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "53073"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,value_profile,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "12378"
+  },
+  {
+    "strategy": "corpus_mutations_ml_rnn,value_profile,fork,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "4825"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,fork,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "1827"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,value_profile,fork,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "891"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "2139"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,value_profile,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "1144"
+  },
+  {
+    "strategy": "random_max_len,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "58060"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,value_profile,fork,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "6881"
+  },
+  {
+    "strategy": "random_max_len,value_profile,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "28358"
+  },
+  {
+    "strategy": "random_max_len,fork,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "47705"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,fork,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "13994"
+  },
+  {
+    "strategy": "random_max_len,value_profile,fork,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "23660"
+  },
+  {
+    "strategy": "random_max_len,value_profile,fork,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "2086"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,value_profile,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "6813"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "13942"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,value_profile,fork,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "1452"
+  },
+  {
+    "strategy": "random_max_len,fork,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "4262"
+  },
+  {
+    "strategy": "random_max_len,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "4946"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,fork,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "266"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,fork,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "3178"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "1241"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "3855"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,value_profile,corpus_subset,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "1927"
+  },
+  {
+    "strategy": "random_max_len,value_profile,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "2499"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,value_profile,fork,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "644"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,value_profile,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "616"
+  },
+  {
+    "strategy": "random_max_len,corpus_mutations_ml_rnn,fork,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "1291"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,value_profile,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "166"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "314"
+  },
+  {
+    "strategy": "corpus_mutations_radamsa,random_max_len,value_profile,fork,corpus_subset,recommended_dict,",
+    "bandit_weight": "0.008077518169652463",
+    "run_count": "151"
+  }
+]

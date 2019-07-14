@@ -15,8 +15,10 @@
 
 # TODO(ochang): Support other sanitizers.
 
+from builtins import object
 import re
 
+from datastore.data_types import MISSING_VALUE_STRING
 from datastore.data_types import SecuritySeverity
 from system import environment
 
@@ -168,9 +170,18 @@ class SeverityAnalyzerSanitizerChrome(SeverityAnalyzerSanitizer):
     # this should be rare from an uncompromised renderer), it shouldn't matter
     # too much.
     main_function_regex = re.compile(r'content::([A-Z][a-z]+)Main\(')
+
+    # As a fallback, search for content/browser file paths for determining the
+    # browser process.
+    content_browser_regex = re.compile(r'content[/\\]browser')
+
     for line in crash_output.splitlines():
       if 'content::ContentMain' in line:
         continue
+
+      if content_browser_regex.search(line):
+        process_type = 'browser'
+        break
 
       match = main_function_regex.search(line)
       if not match:
@@ -180,3 +191,31 @@ class SeverityAnalyzerSanitizerChrome(SeverityAnalyzerSanitizer):
       break
 
     return process_type
+
+
+def severity_to_string(severity):
+  """Convert a severity value to a human-readable string."""
+  severity_map = {
+      SecuritySeverity.CRITICAL: 'Critical',
+      SecuritySeverity.HIGH: 'High',
+      SecuritySeverity.MEDIUM: 'Medium',
+      SecuritySeverity.LOW: 'Low',
+      SecuritySeverity.MISSING: MISSING_VALUE_STRING,
+  }
+
+  return severity_map[severity]
+
+
+def string_to_severity(severity):
+  """Convert a string value to a severity value."""
+  severity_map = {
+      'critical': SecuritySeverity.CRITICAL,
+      'high': SecuritySeverity.HIGH,
+      'medium': SecuritySeverity.MEDIUM,
+      'low': SecuritySeverity.LOW,
+  }
+
+  if severity.lower() in severity_map:
+    return severity_map[severity.lower()]
+
+  return SecuritySeverity.MISSING

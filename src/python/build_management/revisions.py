@@ -13,15 +13,19 @@
 # limitations under the License.
 """Revisions related helper functions."""
 
+from future import standard_library
+standard_library.install_aliases()
+from builtins import range
+from past.builtins import basestring
 import base64
 import bisect
-import json
 import os
 import re
+import requests
+import six
 import time
-import urllib
-import urllib2
-import urlparse
+import urllib.parse
+import yaml
 
 from base import memoize
 from base import utils
@@ -43,6 +47,7 @@ COMPONENT_NAMES_BLACKLIST = [
 ]
 DISK_CACHE_SIZE = 1000
 SOURCE_MAP_EXTENSION = '.srcmap.json'
+FIND_BRANCHED_FROM = re.compile(r'Cr-Branched-From:.*master@\{#(\d+)\}')
 
 
 def _add_components_from_dict(deps_dict, vars_dict, revisions_dict):
@@ -51,7 +56,7 @@ def _add_components_from_dict(deps_dict, vars_dict, revisions_dict):
     # If the dictionary is None, bail out early.
     return
 
-  for key, value in deps_dict.items():
+  for key, value in six.iteritems(deps_dict):
     url = rev = None
     if isinstance(value, basestring):
       url, _, rev = value.partition('@')
@@ -125,7 +130,7 @@ def _get_display_revision(component_revision_dict):
   if 'commit_pos' in component_revision_dict:
     return component_revision_dict['commit_pos']
 
-  return component_revision_dict['rev']
+  return component_revision_dict['rev'] or '<empty>'
 
 
 def _get_link_text(start_component_revision_dict, end_component_revision_dict):
@@ -198,18 +203,18 @@ def _is_clank(url):
 
 def _is_deps(url):
   """Return bool on whether this is a DEPS url or not."""
-  return urlparse.urlparse(url).path.endswith('/DEPS')
+  return urllib.parse.urlparse(url).path.endswith('/DEPS')
 
 
-def _src_map_to_revisions_dict(src_map, default_project_name):
+def _src_map_to_revisions_dict(src_map, project_name):
   """Convert src map contents to revisions dict."""
   revisions_dict = {}
 
-  for key in src_map.iterkeys():
+  for key in src_map:
     # Only add keys that have both url and rev attributes.
     if 'url' in src_map[key] and 'rev' in src_map[key]:
       revisions_dict[key] = {
-          'name': _get_component_display_name(key, default_project_name),
+          'name': _get_component_display_name(key, project_name),
           'rev': src_map[key]['rev'],
           'url': src_map[key]['url']
       }
@@ -225,29 +230,29 @@ def _git_commit_position_to_git_hash_for_chromium(revision, repository):
       'number': revision,
       'numbering_identifier': 'refs/heads/master',
       'numbering_type': 'COMMIT_POSITION',
-      'project': utils.default_project_name(),
+      'project': 'chromium',
       'repo': repository,
       'fields': 'git_sha',
   }
-  query_string = urllib.urlencode(request_variables)
+  query_string = urllib.parse.urlencode(request_variables)
   query_url = '%s?%s' % (CRREV_NUMBERING_URL, query_string)
   url_content = _get_url_content(query_url)
   if url_content is None:
     return None
 
-  result_dict = _to_json_dict(url_content)
+  result_dict = _to_yaml_dict(url_content)
   if result_dict is None:
     return None
 
   return result_dict['git_sha']
 
 
-def _to_json_dict(contents):
-  """Parse |contents| as JSON dict, returning None on failure or if it's not a
+def _to_yaml_dict(contents):
+  """Parse |contents| as YAML dict, returning None on failure or if it's not a
   dict."""
   try:
-    # Assume JSON, returning None on deserialization failure.
-    result = json.loads(contents)
+    # Assume YAML, returning None on deserialization failure.
+    result = yaml.safe_load(contents)
     if isinstance(result, dict):
       return result
 
@@ -280,7 +285,7 @@ def deps_to_revisions_dict(content):
   deps_os_dict = local_context.get('deps_os')
   if deps_os_dict:
     # |deps_os| variable is optional.
-    for deps_os in deps_os_dict.values():
+    for deps_os in list(deps_os_dict.values()):
       _add_components_from_dict(deps_os, vars_dict, revisions_dict)
 
   return revisions_dict
@@ -317,9 +322,9 @@ def get_component_revisions_dict(revision, job_type):
     # Return empty dict for zero start revision.
     return {}
 
-  component = data_handler.get_component_name(job_type)
   config = db_config.get()
-  default_project_name = utils.default_project_name()
+  component = data_handler.get_component_name(job_type)
+  project_name = data_handler.get_project_name(job_type)
 
   revision_info_url_format = db_config.get_value_for_job(
       config.revision_vars_url, job_type)
@@ -341,7 +346,7 @@ def get_component_revisions_dict(revision, job_type):
     # is shared with an external service (e.g. Predator) we may need to clean
     # this up beforehand.
     revisions_dict['/src'] = {
-        'name': _get_component_display_name(component, default_project_name),
+        'name': _get_component_display_name(component, project_name),
         'url': _git_url_for_chromium_repository(repository),
         'rev': revision_hash,
         'commit_pos': revision
@@ -370,13 +375,16 @@ def get_component_revisions_dict(revision, job_type):
   if _is_clank(revision_info_url):
     return _clank_revision_file_to_revisions_dict(url_content)
 
-  # Default case: parse content as json.
-  revisions_dict = _to_json_dict(url_content)
+  # Default case: parse content as yaml.
+  revisions_dict = _to_yaml_dict(url_content)
+  if not revisions_dict:
+    logs.log_error(
+        'Failed to parse component revisions from %s.' % revision_info_url)
+    return None
 
   # Parse as per source map format.
   if revision_info_url.endswith(SOURCE_MAP_EXTENSION):
-    revisions_dict = _src_map_to_revisions_dict(revisions_dict,
-                                                default_project_name)
+    revisions_dict = _src_map_to_revisions_dict(revisions_dict, project_name)
 
   return revisions_dict
 
@@ -453,11 +461,11 @@ def get_build_to_revision_mappings(platform=None):
   operations_timeout = environment.get_value('URL_BLOCKING_OPERATIONS_TIMEOUT')
   result = {}
 
-  try:
-    url_handle = urllib2.urlopen(build_info_url, timeout=operations_timeout)
-    build_info = url_handle.read()
-  except:
+  response = requests.get(build_info_url, timeout=operations_timeout)
+  if response.status_code != 200:
+    logs.log_error('Failed to get build mappings from url: %s' % build_info_url)
     return None
+  build_info = response.text
 
   for line in build_info.splitlines():
     m = re.match(build_info_pattern, line)
@@ -539,7 +547,7 @@ def find_build_url(bucket_path, build_url_list, revision):
     return None
 
   revision_pattern = revision_pattern_from_build_bucket_path(bucket_path)
-  for index in xrange(len(build_url_list)):
+  for index in range(len(build_url_list)):
     match = re.match(revision_pattern, build_url_list[index])
     if not match:
       continue
@@ -587,7 +595,7 @@ def get_first_revision_in_list(revision_list):
   if not min_revision:
     return first_revision
 
-  for index in xrange(len(revision_list)):
+  for index in range(len(revision_list)):
     if revision_list[index] >= min_revision:
       return revision_list[index]
 
@@ -612,7 +620,7 @@ def get_real_revision(revision, job_type, display=False):
   if not component_revisions_dict:
     return str(revision)
 
-  keys = component_revisions_dict.keys()
+  keys = list(component_revisions_dict.keys())
   key = ('/src' if '/src' in keys else get_components_list(
       component_revisions_dict, job_type)[0])
   helper = _get_display_revision if display else _get_revision
@@ -635,7 +643,7 @@ def get_src_map(revision):
         'Failed to get component revisions from %s.' % revision_info_url)
     return None
 
-  return _to_json_dict(url_content)
+  return _to_yaml_dict(url_content)
 
 
 def needs_update(revision_file, revision):
@@ -645,7 +653,7 @@ def needs_update(revision_file, revision):
   file_exists = False
   retry_limit = environment.get_value('FAIL_RETRIES')
 
-  for _ in xrange(retry_limit):
+  for _ in range(retry_limit):
     # NFS can sometimes return a wrong result on file existence, so redo
     # this check a couple of times to be sure.
     if not os.path.exists(revision_file):
@@ -686,8 +694,8 @@ def needs_update(revision_file, revision):
 def write_revision_to_revision_file(revision_file, revision):
   """Writes a revision to the revision file."""
   try:
-    with open(revision_file, 'w') as file_handle:
-      file_handle.write(str(revision))
+    with open(revision_file, 'wb') as file_handle:
+      file_handle.write(bytes(revision))
   except:
     logs.log_error(
         "Could not save revision to revision file '%s'" % revision_file)
@@ -696,3 +704,29 @@ def write_revision_to_revision_file(revision_file, revision):
 def revision_pattern_from_build_bucket_path(bucket_path):
   """Get the revision pattern from a build bucket path."""
   return '.*' + os.path.basename(bucket_path)
+
+
+@memoize.wrap(memoize.FifoOnDisk(DISK_CACHE_SIZE))
+@memoize.wrap(memoize.Memcache(60 * 60 * 24 * 30))  # 30 day TTL
+def revision_to_branched_from(uri, revision):
+  """Interrogates git code review server to find the branch-from
+  revision of a component."""
+  full_uri = "%s/+/%s?format=JSON" % (uri, revision)
+  url_content = _get_url_content(full_uri)
+  # gerrit intentionally returns nonsense in the first line.
+  # See 'cross site script inclusion here:
+  # https://gerrit-review.googlesource.com/Documentation/rest-api.html
+  url_content = '\n'.join(url_content.splitlines()[1:])
+  result = _to_yaml_dict(url_content)
+  if not result:
+    logs.log_error("Unable to retrieve and parse YAML for %s" % full_uri)
+    return None
+  msg = result.get('message', None)
+  if not msg:
+    logs.log_error("%s JSON had no 'message'" % full_uri)
+    return None
+  m = FIND_BRANCHED_FROM.search(msg)
+  if not m:
+    logs.log_error("%s JSON message lacked Cr-Branched-From" % full_uri)
+    return None
+  return m.group(1)

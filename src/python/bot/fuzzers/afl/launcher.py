@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Launcher script for afl-based fuzzers."""
+from __future__ import print_function
 
 # pylint: disable=g-statement-before-imports
+from builtins import object
 try:
   # ClusterFuzz dependencies.
   from python.base import modules
@@ -22,11 +24,14 @@ except ImportError:
   pass
 
 import atexit
+import collections
 import os
 import re
 import shutil
 import signal
+import six
 import stat
+import subprocess
 import sys
 
 from base import utils
@@ -34,21 +39,21 @@ from bot.fuzzers import dictionary_manager
 from bot.fuzzers import engine_common
 from bot.fuzzers import options
 from bot.fuzzers import utils as fuzzer_utils
+from bot.fuzzers.afl import constants
+from bot.fuzzers.afl import stats
+from bot.fuzzers.afl import strategies
+from bot.fuzzers.afl.fuzzer import write_dummy_file
 from datastore import data_types
-from fuzzer import write_dummy_file
 from metrics import logs
+from metrics import profiler
 from system import environment
 from system import minijail
 from system import new_process
 from system import shell
-import constants
-import stats
-import strategies
 
-# Allow 10 minutes to merge the testcases back into the corpus.
-# TODO(metzman): Determine if we should set this equal to libFuzzer's merge
-# timeout.
-DEFAULT_MERGE_TIMEOUT = 10 * 60
+# Allow 30 minutes to merge the testcases back into the corpus. This matches
+# libFuzzer's merge timeout.
+DEFAULT_MERGE_TIMEOUT = 30 * 60
 
 # Prefix for the fuzzer's full name.
 AFL_PREFIX = 'afl_'
@@ -65,12 +70,29 @@ USE_MINIJAIL = environment.get_value('USE_MINIJAIL')
 PERSISTENT_EXECUTIONS_OPTION = 'n'
 
 
+class AflOptionType(object):
+  ARG = 0
+  ENV_VAR = 1
+
+
+# Afl options have names and can either be commandline arguments or environment
+# variables.
+AflOption = collections.namedtuple('AflOption', ['name', 'type'])
+
+
 class AflConfig(object):
   """Helper class that determines the arguments that should be passed to
-  afl-fuzz, environment variables that should be set before running afl-fuzz and
-  the number of persistent executions that should be passed to the target
+  afl-fuzz, environment variables that should be set before running afl-fuzz,
+  and the number of persistent executions that should be passed to the target
   Determines these mainly by parsing the .options file for the target."""
-  LIBFUZZER_TO_AFL_OPTIONS = {'dict': constants.DICT_FLAG}
+
+  # Mapping of libfuzzer option names to AflOption objects.
+  LIBFUZZER_TO_AFL_OPTIONS = {
+      'dict':
+          AflOption(constants.DICT_FLAG, AflOptionType.ARG),
+      'close_fd_mask':
+          AflOption(constants.CLOSE_FD_MASK_ENV_VAR, AflOptionType.ENV_VAR),
+  }
 
   def __init__(self):
     """Sets the configs to sane defaults. Use from_target_path if you want to
@@ -98,22 +120,25 @@ class AflConfig(object):
     if not fuzzer_options:
       return
 
-    # Try to convert libFuzzer arguments to AFL.
-    libfuzzer_options = fuzzer_options.get_engine_arguments('libfuzzer')
+    self.additional_env_vars = fuzzer_options.get_env()
 
-    for name, value in libfuzzer_options.dict().iteritems():
-      if name not in self.LIBFUZZER_TO_AFL_OPTIONS:
+    # Try to convert libFuzzer arguments to AFL arguments or env vars.
+    libfuzzer_options = fuzzer_options.get_engine_arguments('libfuzzer')
+    for libfuzzer_name, value in six.iteritems(libfuzzer_options.dict()):
+      if libfuzzer_name not in self.LIBFUZZER_TO_AFL_OPTIONS:
         continue
 
-      afl_name = self.LIBFUZZER_TO_AFL_OPTIONS[name]
-      self.additional_afl_arguments.append('%s%s' % (afl_name, value))
+      afl_option = self.LIBFUZZER_TO_AFL_OPTIONS[libfuzzer_name]
+      if afl_option.type == AflOptionType.ARG:
+        self.additional_afl_arguments.append('%s%s' % (afl_option.name, value))
+      else:
+        assert afl_option.type == AflOptionType.ENV_VAR
+        self.additional_env_vars[afl_option.name] = value
 
     # Get configs set specifically for AFL.
     afl_options = fuzzer_options.get_engine_arguments('AFL')
     self.num_persistent_executions = afl_options.get(
         PERSISTENT_EXECUTIONS_OPTION, constants.MAX_PERSISTENT_EXECUTIONS)
-
-    self.additional_env_vars = fuzzer_options.get_env()
 
   def use_default_dict(self, target_path):
     """Set the dictionary argument in |self.additional_afl_arguments| to
@@ -127,10 +152,8 @@ class AflConfig(object):
     if not os.path.exists(default_dict_path):
       return
 
-    self.additional_afl_arguments.append(constants.DICT_FLAG +
-                                         default_dict_path)
-
     self.dict_path = default_dict_path
+    self.additional_afl_arguments.append(constants.DICT_FLAG + self.dict_path)
 
 
 class AflFuzzOutputDirectory(object):
@@ -384,7 +407,7 @@ class AflFuzzInputDirectory(object):
     # it doesn't have to be fixed every time by AFL.
     # TODO(metzman): Copy testcases in subdirectories so AFL can use them, even
     # when there are no oversized files.
-    corpus_file_paths = list_full_file_paths_recursive(self.input_directory)
+    corpus_file_paths = shell.get_files_list(self.input_directory)
     usable_files_and_sizes = [
         (path, os.path.getsize(path))
         for path in corpus_file_paths
@@ -522,7 +545,7 @@ class AflRunnerCommon(object):
 
     self.initial_max_total_time = 0
 
-    for env_var, value in config.additional_env_vars.iteritems():
+    for env_var, value in six.iteritems(config.additional_env_vars):
       environment.set_value(env_var, value)
 
     self._showmap_output_path = None
@@ -586,7 +609,7 @@ class AflRunnerCommon(object):
 
     self.afl_setup()
     result = self.run_and_wait(additional_args=[testcase_path])
-    print 'Running command:', engine_common.get_command_quoted(result.command)
+    print('Running command:', engine_common.get_command_quoted(result.command))
     if result.return_code not in [0, 1]:
       logs.log_error(
           'AFL target exited with abnormal exit code: %s.' % result.return_code,
@@ -1013,10 +1036,10 @@ class AflRunnerCommon(object):
     self.set_arg(showmap_args, constants.OUTPUT_FLAG, showmap_output_path)
 
     input_dir = self.afl_input.input_directory
-    corpus_features = set()
+    corpus = Corpus()
     input_inodes = set()
     input_filenames = set()
-    for file_path in list_full_file_paths_recursive(input_dir):
+    for file_path in shell.get_files_list(input_dir):
       file_features, timed_out = self.get_file_features(file_path, showmap_args)
       if timed_out:
         logs.log_warn('Timed out in merge while processing initial corpus.')
@@ -1024,9 +1047,8 @@ class AflRunnerCommon(object):
 
       input_inodes.add(os.stat(file_path).st_ino)
       input_filenames.add(os.path.basename(file_path))
-      corpus_features |= file_features
+      corpus.associate_features_with_file(file_features, file_path)
 
-    merge_candidates = {}
     for file_path in list_full_file_paths(self.afl_output.queue):
       # Don't waste time merging copied files.
       inode = os.stat(file_path).st_ino
@@ -1045,29 +1067,16 @@ class AflRunnerCommon(object):
         logs.log_warn('Timed out in merge while processing output.')
         break
 
-      # Does the file have unique features?
-      if file_features - corpus_features:
-        corpus_features |= file_features
-        merge_candidates[file_features] = {
-            'path': file_path,
-            'size': os.path.getsize(file_path)
-        }
-
-      elif file_features in merge_candidates:
-        # Replace the equivalent merge candidate if it is larger than this file.
-        file_size = os.path.getsize(file_path)
-        if merge_candidates[file_features]['size'] > file_size:
-          merge_candidates[file_features] = {
-              'path': file_path,
-              'size': file_size
-          }
+      corpus.associate_features_with_file(file_features, file_path)
 
     # Use destination file as hash of file contents to avoid overwriting
     # different files with the same name that were created from another
     # launcher instance.
     new_units_added = 0
-    for candidate in merge_candidates.itervalues():
-      src_path = candidate['path']
+    for src_path in corpus.element_paths:
+      # Don't merge files into the initial corpus if they are already there.
+      if os.path.dirname(src_path) == input_dir:
+        continue
       dest_filename = utils.file_hash(src_path)
       dest_path = os.path.join(input_dir, dest_filename)
       if shell.move(src_path, dest_path):
@@ -1203,6 +1212,69 @@ class MinijailAflRunner(AflRunnerCommon,
                           '/' + STDERR_FILENAME)
 
 
+class CorpusElement(object):
+  """An element (file) in a corpus."""
+
+  def __init__(self, path):
+    self.path = path
+    self.size = os.path.getsize(self.path)
+
+
+class Corpus(object):
+  """A minimal set of input files (elements) for a fuzz target."""
+
+  def __init__(self):
+    self.features_and_elements = {}
+
+  @property
+  def element_paths(self):
+    """Returns the filepaths of all elements in the corpus."""
+    return set(
+        element.path for element in six.itervalues(self.features_and_elements))
+
+  def _associate_feature_with_element(self, feature, element):
+    """Associate a feature with an element if the element is the smallest for
+    the feature."""
+    if feature not in self.features_and_elements:
+      self.features_and_elements[feature] = element
+      return
+
+    # Feature already has an associated element.
+    incumbent_element = self.features_and_elements[feature]
+    if incumbent_element.size > element.size:
+      self.features_and_elements[feature] = element
+
+  def associate_features_with_file(self, features, path):
+    """Associate features with a file when the file is the smallest for the
+    features."""
+    element = CorpusElement(path)
+    for feature in features:
+      self._associate_feature_with_element(feature, element)
+
+
+def _verify_system_config():
+  """Verifies system settings required for AFL."""
+
+  def _check_core_pattern_file():
+    """Verifies that core pattern file content is set to 'core'."""
+    if not os.path.exists(constants.CORE_PATTERN_FILE_PATH):
+      return False
+
+    return open(constants.CORE_PATTERN_FILE_PATH).read().strip() == 'core'
+
+  if _check_core_pattern_file():
+    return
+
+  return_code = subprocess.call(
+      'sudo -n bash -c "echo core > {path}"'.format(
+          path=constants.CORE_PATTERN_FILE_PATH),
+      shell=True)
+  if return_code or not _check_core_pattern_file():
+    logs.log_fatal_and_exit(
+        'Failed to set {path}. AFL needs {path} to be set to core.'.format(
+            path=constants.CORE_PATTERN_FILE_PATH))
+
+
 def load_testcase_if_exists(fuzzer_runner, testcase_file_path):
   """Loads a crash testcase if it exists."""
   # To ensure that we can run the fuzzer.
@@ -1210,7 +1282,7 @@ def load_testcase_if_exists(fuzzer_runner, testcase_file_path):
            | stat.S_IXGRP)
 
   fuzzer_runner.run_single_testcase(testcase_file_path)
-  print fuzzer_runner.fuzzer_stderr
+  print(fuzzer_runner.fuzzer_stderr)
   return True
 
 
@@ -1237,7 +1309,8 @@ def set_additional_sanitizer_options_for_afl_fuzz():
       },
   }
 
-  for options_env_var, option_values in required_sanitizer_options.iteritems():
+  for options_env_var, option_values in six.iteritems(
+      required_sanitizer_options):
     # If os.environ[options_env_var] is an empty string, afl will refuse to run,
     # because we haven't set the right options. Thus only continue if it does
     # not exist.
@@ -1257,16 +1330,6 @@ def remove_path(path):
   elif os.path.isdir(path):
     shutil.rmtree(path)
   # Else path doesn't exist. Do nothing.
-
-
-def list_full_file_paths_recursive(directory):
-  """List the absolute paths of files in |directory| and its subdirectories."""
-  paths = []
-
-  for root, _, filenames in os.walk(directory):
-    for filename in filenames:
-      paths.append(os.path.join(root, filename))
-  return paths
 
 
 def list_full_file_paths(directory):
@@ -1324,6 +1387,10 @@ def main(argv):
           'engine': 'afl',
           'job_name': environment.get_value('JOB_NAME')
       })
+
+  _verify_system_config()
+
+  profiler.start_if_needed('afl_launcher')
 
   build_directory = environment.get_value('BUILD_DIR')
   fuzzer_path = engine_common.find_fuzzer_path(build_directory, target_name)
@@ -1398,19 +1465,19 @@ def main(argv):
     command = engine_common.strip_minijail_command(command,
                                                    runner.afl_fuzz_path)
   # Print info for the fuzzer logs.
-  print('Command: {0}\n'
-        'Bot: {1}\n'
-        'Time ran: {2}\n').format(
-            engine_common.get_command_quoted(command), BOT_NAME,
-            fuzz_result.time_executed)
+  print(('Command: {0}\n'
+         'Bot: {1}\n'
+         'Time ran: {2}\n').format(
+             engine_common.get_command_quoted(command), BOT_NAME,
+             fuzz_result.time_executed))
 
-  print fuzz_result.output
+  print(fuzz_result.output)
   runner.strategies.print_strategies()
 
   if fuzz_result.return_code:
     # If AFL returned a non-zero return code quit now without getting stats,
     # since they would be meaningless.
-    print runner.fuzzer_stderr
+    print(runner.fuzzer_stderr)
     return
 
   stats_getter = stats.StatsGetter(runner.afl_output.stats_path,
@@ -1426,14 +1493,15 @@ def main(argv):
                                       AFL_PREFIX, fuzzer_name, command)
 
   finally:
-    print runner.fuzzer_stderr
+    print(runner.fuzzer_stderr)
 
-  # Whenever new units are added to corpus, record the stats to make them
-  # easily searchable in stackdriver.
+  # Record the stats to make them easily searchable in stackdriver.
   if new_units_added:
     logs.log(
         'New units added to corpus: %d.' % new_units_added,
         stats=stats_getter.stats)
+  else:
+    logs.log('No new units found.', stats=stats_getter.stats)
 
 
 if __name__ == '__main__':

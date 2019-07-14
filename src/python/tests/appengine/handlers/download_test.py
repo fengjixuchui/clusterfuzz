@@ -13,8 +13,10 @@
 # limitations under the License.
 """Tests for download."""
 
+from future import standard_library
+standard_library.install_aliases()
 import unittest
-import urllib
+import urllib.parse
 
 import webapp2
 import webtest
@@ -22,6 +24,7 @@ import webtest
 from datastore import data_types
 from google_cloud_utils import storage
 from handlers import download
+from libs.issue_management import issue_tracker
 from tests.test_libs import helpers as test_helpers
 from tests.test_libs import test_utils
 
@@ -44,13 +47,12 @@ class DownloadTest(unittest.TestCase):
     test_helpers.patch(self, [
         'base.utils.is_oss_fuzz',
         'google_cloud_utils.blobs.get_blob_info',
-        'google.appengine.api.users.create_login_url',
-        'google.appengine.api.users.create_logout_url',
-        'issue_management.issue_tracker_utils.get_issue_tracker_manager',
         'libs.access.can_user_access_testcase',
         'libs.access.has_access',
-        'libs.helpers.get_user_email',
         'libs.gcs.get_signed_url',
+        'libs.helpers.get_user_email',
+        'libs.issue_management.issue_tracker_utils.'
+        'get_issue_tracker_for_testcase',
     ])
     self.mock.is_oss_fuzz.return_value = False
     self.mock.can_user_access_testcase.return_value = False
@@ -90,7 +92,7 @@ class DownloadTest(unittest.TestCase):
     if expect_filename:
       expected_url += (
           '&response-content-disposition='
-          'attachment%3B+filename%3D' + urllib.quote(expect_filename))
+          'attachment%3B+filename%3D' + urllib.parse.quote(expect_filename))
 
     if expect_blob:
       self.assertEqual(expected_url, resp.location)
@@ -105,23 +107,23 @@ class DownloadTest(unittest.TestCase):
     """Test download (not logged in)."""
     self.mock.get_user_email.return_value = ''
     self._test_download(
-        self.minimized_key, expect_status=403, expect_blob=False)
-    self._test_download(self.fuzzed_key, expect_status=403, expect_blob=False)
-    self._test_download(self.unused_key, expect_status=403, expect_blob=False)
+        self.minimized_key, expect_status=302, expect_blob=False)
+    self._test_download(self.fuzzed_key, expect_status=302, expect_blob=False)
+    self._test_download(self.unused_key, expect_status=302, expect_blob=False)
 
     self._test_download(
         testcase_id=self.testcase.key.id(),
-        expect_status=403,
+        expect_status=302,
         expect_blob=False)
     self._test_download(
         self.minimized_key,
         testcase_id=self.testcase.key.id(),
-        expect_status=403,
+        expect_status=302,
         expect_blob=False)
     self._test_download(
         self.fuzzed_key,
         testcase_id=self.testcase.key.id(),
-        expect_status=403,
+        expect_status=302,
         expect_blob=False)
 
   def test_download_user(self):
@@ -185,44 +187,37 @@ class DownloadTest(unittest.TestCase):
   def test_public_download_chromium(self):
     """Test public downloading chromium testcases (should fail)."""
     self.mock.get_user_email.return_value = ''
-
-    def mock_has_label(label):
-      return label.lower() != 'restrict-view-commit'
-
     self.mock.is_oss_fuzz.return_value = False
-    mock_issue = self.mock.get_issue_tracker_manager().get_issue()
-    mock_issue.has_label.side_effect = mock_has_label
+    mock_issue = self.mock.get_issue_tracker_for_testcase(None).get_issue()
+    mock_issue.labels = issue_tracker.LabelStore([])
 
     self._test_download(
-        self.minimized_key, expect_status=403, expect_blob=False)
+        self.minimized_key, expect_status=302, expect_blob=False)
     self._test_download(
         testcase_id=self.testcase.key.id(),
-        expect_status=403,
+        expect_status=302,
         expect_blob=False)
     self._test_download(
         self.minimized_key,
         testcase_id=self.testcase.key.id(),
-        expect_status=403,
+        expect_status=302,
         expect_blob=False)
     self._test_download(
         self.fuzzed_key,
         testcase_id=self.testcase.key.id(),
-        expect_status=403,
+        expect_status=302,
         expect_blob=False)
 
   def test_public_download_oss_fuzz(self):
     """Test public downloading OSS-Fuzz testcases."""
     self.mock.get_user_email.return_value = ''
 
-    def mock_has_label(label):
-      return label.lower() != 'restrict-view-commit'
-
     self.mock.is_oss_fuzz.return_value = True
-    mock_issue = self.mock.get_issue_tracker_manager().get_issue()
-    mock_issue.has_label.side_effect = mock_has_label
+    mock_issue = self.mock.get_issue_tracker_for_testcase(None).get_issue()
+    mock_issue.labels = issue_tracker.LabelStore([])
 
     self._test_download(
-        self.minimized_key, expect_status=403, expect_blob=False)
+        self.minimized_key, expect_status=302, expect_blob=False)
     self._test_download(
         testcase_id=self.testcase.key.id(),
         expect_filename='clusterfuzz-testcase-minimized-1.ext')
@@ -234,23 +229,23 @@ class DownloadTest(unittest.TestCase):
     self._test_download(
         self.fuzzed_key,
         testcase_id=self.testcase.key.id(),
-        expect_status=403,
+        expect_status=302,
         expect_blob=False)
 
-    mock_issue.has_label.side_effect = lambda _: True
+    mock_issue.labels = issue_tracker.LabelStore(['restrict-view-commit'])
     self._test_download(
         testcase_id=self.testcase.key.id(),
-        expect_status=403,
+        expect_status=302,
         expect_blob=False)
     self._test_download(
         self.minimized_key,
         testcase_id=self.testcase.key.id(),
-        expect_status=403,
+        expect_status=302,
         expect_blob=False)
     self._test_download(
         self.fuzzed_key,
         testcase_id=self.testcase.key.id(),
-        expect_status=403,
+        expect_status=302,
         expect_blob=False)
 
     # Privileged users should still be able to access everything.

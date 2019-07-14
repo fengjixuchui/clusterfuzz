@@ -13,6 +13,7 @@
 # limitations under the License.
 """Tests for oss_fuzz_build_status."""
 
+from builtins import object
 import datetime
 import json
 import mock
@@ -23,16 +24,20 @@ import webtest
 
 from datastore import data_types
 from handlers.cron import oss_fuzz_build_status
-from issue_management.issue import Issue
+from libs.issue_management import monorail
+from libs.issue_management.monorail.issue import Issue
 from tests.test_libs import helpers as test_helpers
 from tests.test_libs import test_utils
 
 
 class MockResponse(object):
-  """Mock urlfetch response."""
+  """Mock url request's response."""
 
-  def __init__(self, content):
-    self.content = content
+  def __init__(self, text):
+    self.text = text
+
+  def raise_for_status(self):
+    pass
 
 
 class IssueTrackerManager(object):
@@ -43,9 +48,11 @@ class IssueTrackerManager(object):
     self.issues = {}
     self.next_id = 1
 
-  def get_original_issue(self, issue_id):
+  def get_issue(self, issue_id):
     """Get original issue."""
-    return self.issues[issue_id]
+    issue = self.issues[issue_id]
+    issue.itm = self
+    return issue
 
   def save(self, issue, *args, **kwargs):  # pylint: disable=unused-argument
     """Save an issue."""
@@ -66,25 +73,25 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
                                   oss_fuzz_build_status.Handler)]))
 
     test_helpers.patch(self, [
-        'metrics.logs.log_error',
         'base.utils.utcnow',
-        'issue_management.issue_tracker_utils.get_issue_tracker_manager',
         'handlers.base_handler.Handler.is_cron',
-        'handlers.cron.oss_fuzz_build_status.urlfetch.fetch',
+        'libs.issue_management.issue_tracker_utils.get_issue_tracker',
+        'metrics.logs.log_error',
+        'requests.get',
     ])
 
-    self.mock.utcnow.return_value = datetime.datetime(2018, 02, 01)
+    self.mock.utcnow.return_value = datetime.datetime(2018, 2, 1)
     self.mock.is_cron.return_value = True
 
     self.itm = IssueTrackerManager('oss-fuzz')
-    self.mock.get_issue_tracker_manager.return_value = self.itm
+    self.mock.get_issue_tracker.return_value = monorail.IssueTracker(self.itm)
 
     self.maxDiff = None  # pylint: disable=invalid-name
 
   def test_no_build_failures(self):
     """Test run with no build failures."""
     # Return the same status for all build types.
-    self.mock.fetch.return_value = MockResponse(
+    self.mock.get.return_value = MockResponse(
         json.dumps({
             'successes': [
                 {
@@ -108,8 +115,8 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
   def test_build_failures(self):
     """Test run with multiple build failures of different type."""
 
-    def _mock_fetch(url):
-      """Mock fetch."""
+    def _mock_requests_get(url):
+      """Mock requests.get."""
       if url == oss_fuzz_build_status.FUZZING_STATUS_URL:
         return MockResponse(
             json.dumps({
@@ -222,26 +229,26 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
               ],
           }))
 
-    self.mock.fetch.side_effect = _mock_fetch
+    self.mock.get.side_effect = _mock_requests_get
 
     data_types.OssFuzzBuildFailure(
         id='proj2',
         project_name='proj2',
-        last_checked_timestamp=datetime.datetime(2018, 01, 31),
+        last_checked_timestamp=datetime.datetime(2018, 1, 31),
         consecutive_failures=1,
         build_type='fuzzing').put()
 
     data_types.OssFuzzBuildFailure(
         id='proj3',
         project_name='proj3',
-        last_checked_timestamp=datetime.datetime(2018, 01, 31),
+        last_checked_timestamp=datetime.datetime(2018, 1, 31),
         consecutive_failures=1,
         build_type='fuzzing').put()
 
     data_types.OssFuzzBuildFailure(
         id='proj4',
         project_name='proj4',
-        last_checked_timestamp=datetime.datetime(2018, 01, 31),
+        last_checked_timestamp=datetime.datetime(2018, 1, 31),
         issue_id='1337',
         consecutive_failures=2,
         build_type='fuzzing').put()
@@ -249,7 +256,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
     data_types.OssFuzzBuildFailure(
         id='proj5-coverage',
         project_name='proj5',
-        last_checked_timestamp=datetime.datetime(2018, 01, 31),
+        last_checked_timestamp=datetime.datetime(2018, 1, 31),
         issue_id='31337',
         consecutive_failures=5,
         build_type='coverage').put()
@@ -257,7 +264,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
     data_types.OssFuzzBuildFailure(
         id='proj6-coverage',
         project_name='proj6',
-        last_checked_timestamp=datetime.datetime(2018, 01, 31),
+        last_checked_timestamp=datetime.datetime(2018, 1, 31),
         issue_id=None,
         consecutive_failures=1,
         build_type='coverage').put()
@@ -319,7 +326,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
     issue = self.itm.issues[1]
     self.assertItemsEqual(['a@user.com'], issue.cc)
     self.assertEqual('New', issue.status)
-    self.assertEqual('proj2: Build failure', issue.summary)
+    self.assertEqual('proj2: Fuzzing build failure', issue.summary)
     self.assertEqual(
         'The last 2 builds for proj2 have been failing.\n'
         '<b>Build log:</b> '
@@ -340,7 +347,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
     issue = self.itm.issues[2]
     self.assertItemsEqual(['b@user.com'], issue.cc)
     self.assertEqual('New', issue.status)
-    self.assertEqual('proj6: Build failure', issue.summary)
+    self.assertEqual('proj6: Coverage build failure', issue.summary)
     self.assertEqual(
         'The last 2 builds for proj6 have been failing.\n'
         '<b>Build log:</b> '
@@ -361,7 +368,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
   def test_recovered_build_failure(self):
     """Test fixed build failures."""
     # Use the same status for all build types.
-    self.mock.fetch.return_value = MockResponse(
+    self.mock.get.return_value = MockResponse(
         json.dumps({
             'successes': [{
                 'name': 'proj0',
@@ -374,7 +381,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
     data_types.OssFuzzBuildFailure(
         id='proj0',
         project_name='proj0',
-        last_checked_timestamp=datetime.datetime(2018, 01, 31),
+        last_checked_timestamp=datetime.datetime(2018, 1, 31),
         issue_id='1',
         consecutive_failures=2,
         build_type='fuzzing').put()
@@ -392,7 +399,6 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
     self.assertEqual(0, data_types.OssFuzzBuildFailure.query().count())
 
     issue = self.itm.issues[1]
-    self.assertFalse(issue.open)
     self.assertEqual('Verified', issue.status)
     self.assertEqual('The latest build has succeeded, closing this issue.',
                      issue.comment)
@@ -400,7 +406,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
   def test_missing_builds(self):
     """Test missing builds."""
 
-    def _mock_fetch(url):
+    def _mock_requests_get(url):
       """Mock fetch."""
       if url == oss_fuzz_build_status.FUZZING_STATUS_URL:
         return MockResponse(
@@ -438,7 +444,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
               'failures': [],
           }))
 
-    self.mock.fetch.side_effect = _mock_fetch
+    self.mock.get.side_effect = _mock_requests_get
     self.app.get('/build-status')
     self.mock.log_error.assert_has_calls([
         mock.call('proj0 has not been built in fuzzing config for 2 days.'),
@@ -448,7 +454,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
   def test_disabled_project(self):
     """Test disabled project."""
     # Return the same status for all build types.
-    self.mock.fetch.return_value = MockResponse(
+    self.mock.get.return_value = MockResponse(
         json.dumps({
             'successes': [],
             'failures': [
@@ -465,7 +471,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
     data_types.OssFuzzBuildFailure(
         id='disabled_proj',
         project_name='disabled_proj',
-        last_checked_timestamp=datetime.datetime(2018, 01, 31),
+        last_checked_timestamp=datetime.datetime(2018, 1, 31),
         consecutive_failures=1,
         build_type='fuzzing').put()
 
@@ -487,7 +493,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
   def test_reminder(self):
     """Test reminders."""
     # Return the same status for all build types.
-    self.mock.fetch.return_value = MockResponse(
+    self.mock.get.return_value = MockResponse(
         json.dumps({
             'successes': [],
             'failures': [
@@ -509,7 +515,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
     data_types.OssFuzzBuildFailure(
         id='proj0',
         project_name='proj0',
-        last_checked_timestamp=datetime.datetime(2018, 01, 31),
+        last_checked_timestamp=datetime.datetime(2018, 1, 31),
         issue_id='1',
         consecutive_failures=4,
         build_type='fuzzing').put()
@@ -518,7 +524,7 @@ class OssFuzzBuildStatusTest(unittest.TestCase):
     data_types.OssFuzzBuildFailure(
         id='proj1',
         project_name='proj1',
-        last_checked_timestamp=datetime.datetime(2018, 01, 31),
+        last_checked_timestamp=datetime.datetime(2018, 1, 31),
         issue_id='2',
         consecutive_failures=3,
         build_type='fuzzing').put()

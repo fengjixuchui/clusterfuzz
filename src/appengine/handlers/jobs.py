@@ -13,9 +13,13 @@
 # limitations under the License.
 """Manage job types."""
 
+import six
+
 from base import tasks
 from datastore import data_handler
 from datastore import data_types
+from datastore import ndb
+from datastore import ndb_utils
 from fuzzing import fuzzer_selection
 from handlers import base_handler
 from libs import form
@@ -27,7 +31,7 @@ from libs import helpers
 def get_queues():
   """Return list of task queues."""
   queues = []
-  for name, display_name in tasks.TASK_QUEUE_DISPLAY_NAMES.iteritems():
+  for name, display_name in six.iteritems(tasks.TASK_QUEUE_DISPLAY_NAMES):
     queue = {
         'name': name,
         'display_name': display_name,
@@ -39,7 +43,7 @@ def get_queues():
 
 
 class Handler(base_handler.Handler):
-  """Manage sets of environment variables for bots."""
+  """View job handler."""
 
   @handler.check_user_access(need_privileged_access=True)
   @handler.get(handler.HTML)
@@ -72,7 +76,7 @@ class Handler(base_handler.Handler):
 
 
 class UpdateJob(base_handler.GcsUploadHandler):
-  """Job update handler."""
+  """Update job handler."""
 
   @handler.check_user_access(need_privileged_access=True)
   @handler.require_csrf_token
@@ -153,7 +157,7 @@ class UpdateJob(base_handler.GcsUploadHandler):
 
 
 class UpdateJobTemplate(base_handler.Handler):
-  """Update job template."""
+  """Update job template handler."""
 
   @handler.check_user_access(need_privileged_access=True)
   @handler.require_csrf_token
@@ -194,3 +198,35 @@ class UpdateJobTemplate(base_handler.Handler):
             '/jobs',
     }
     self.render('message.html', template_values)
+
+
+class DeleteJobHandler(base_handler.Handler):
+  """Delete job handler."""
+
+  @handler.check_user_access(need_privileged_access=True)
+  @handler.post(handler.JSON, handler.JSON)
+  @handler.require_csrf_token
+  def post(self):
+    """Handle a post request."""
+    key = helpers.get_integer_key(self.request)
+    job = ndb.Key(data_types.Job, key).get()
+    if not job:
+      raise helpers.EarlyExitException('Job not found.', 400)
+
+    # Delete from fuzzers' jobs' list.
+    for fuzzer in ndb_utils.get_all_from_model(data_types.Fuzzer):
+      if job.name in fuzzer.jobs:
+        fuzzer.jobs.remove(job.name)
+        fuzzer.put()
+
+    # Delete associated fuzzer-job mapping(s).
+    query = data_types.FuzzerJob.query()
+    query = query.filter(data_types.FuzzerJob.job == job.name)
+    for mapping in ndb_utils.get_all_from_query(query):
+      mapping.key.delete()
+
+    # Delete job.
+    job.key.delete()
+
+    helpers.log('Deleted job %s' % job.name, helpers.MODIFY_OPERATION)
+    self.redirect('/jobs')

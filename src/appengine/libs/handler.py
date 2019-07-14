@@ -15,18 +15,17 @@
 import datetime
 import functools
 import json
-import os
 import re
-import urllib
-
-from google.appengine.api import urlfetch
-from google.appengine.api import users
+import requests
+import six
 
 from base import utils
 from config import db_config
 from config import local_config
 from datastore import data_types
 from libs import access
+from libs import auth
+from libs import csp
 from libs import helpers
 from system import environment
 
@@ -56,7 +55,7 @@ def extend_request(req, params):
   """Extends a request."""
 
   def _iterparams():
-    for k, v in params.iteritems():
+    for k, v in six.iteritems(params):
       yield k, v
 
   req.iterparams = _iterparams
@@ -109,7 +108,7 @@ def check_admin_access(func):
   @functools.wraps(func)
   def wrapper(self):
     """Wrapper."""
-    if not users.is_current_user_admin():
+    if not auth.is_current_user_admin():
       raise helpers.AccessDeniedException('Admin access is required.')
 
     return func(self)
@@ -159,37 +158,35 @@ def get_access_token(verification_code):
 
     See: https://developers.google.com/identity/protocols/OAuth2InstalledApp
   """
-  client_id = _auth_config().get('clusterfuzz_tools_oauth_client_id')
+  client_id = db_config.get_value('reproduce_tool_client_id')
   if not client_id:
     raise helpers.UnauthorizedException('Client id not configured.')
 
-  client_secret = db_config.get_value('clusterfuzz_tools_client_secret')
+  client_secret = db_config.get_value('reproduce_tool_client_secret')
   if not client_secret:
     raise helpers.UnauthorizedException('Client secret not configured.')
 
-  response = urlfetch.fetch(
-      url='https://www.googleapis.com/oauth2/v4/token',
-      method=urlfetch.POST,
+  response = requests.post(
+      'https://www.googleapis.com/oauth2/v4/token',
       headers={'Content-Type': 'application/x-www-form-urlencoded'},
-      payload=urllib.urlencode({
+      data={
           'code': verification_code,
           'client_id': client_id,
           'client_secret': client_secret,
           'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob',
           'grant_type': 'authorization_code'
-      }),
-      validate_certificate=True)
+      })
 
   if response.status_code != 200:
     raise helpers.UnauthorizedException('Invalid verification code (%s): %s' %
-                                        (verification_code, response.content))
+                                        (verification_code, response.text))
 
   try:
-    data = json.loads(response.content)
+    data = json.loads(response.text)
     return data['access_token']
   except (KeyError, ValueError):
     raise helpers.EarlyExitException(
-        'Parsing the JSON response body failed: %s' % response.content, 500)
+        'Parsing the JSON response body failed: %s' % response.text, 500)
 
 
 def get_email_and_access_token(authorization):
@@ -198,8 +195,8 @@ def get_email_and_access_token(authorization):
     See: https://developers.google.com/identity/protocols/OAuth2InstalledApp
   """
   if authorization.startswith(VERIFICATION_CODE_PREFIX):
-    access_token = get_access_token(
-        verification_code=authorization.split(' ')[1])
+    verification_code = authorization.split(' ')[1]
+    access_token = get_access_token(verification_code)
     authorization = BEARER_PREFIX + access_token
 
   if not authorization.startswith(BEARER_PREFIX):
@@ -209,18 +206,16 @@ def get_email_and_access_token(authorization):
 
   access_token = authorization.split(' ')[1]
 
-  response = urlfetch.fetch(
-      url=('https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=%s' %
-           access_token),
-      validate_certificate=True)
-
+  response = requests.get(
+      'https://www.googleapis.com/oauth2/v3/tokeninfo',
+      params={'access_token': access_token})
   if response.status_code != 200:
     raise helpers.UnauthorizedException(
         'Failed to authorize. The Authorization header (%s) might be invalid.' %
         authorization)
 
   try:
-    data = json.loads(response.content)
+    data = json.loads(response.text)
 
     # Whitelist service accounts. They have different client IDs (or aud).
     # Therefore, we check against their email directly.
@@ -228,21 +223,26 @@ def get_email_and_access_token(authorization):
         'whitelisted_oauth_emails', default=[]):
       return data['email'], authorization
 
-    if data.get('aud') not in _auth_config().get(
-        'whitelisted_oauth_client_ids', default=[]):
+    # Validate that this is an explicitly whitelisted client ID, or the client
+    # ID for the reproduce tool.
+    whitelisted_client_ids = _auth_config().get(
+        'whitelisted_oauth_client_ids', default=[])
+    reproduce_tool_client_id = db_config.get_value('reproduce_tool_client_id')
+    if reproduce_tool_client_id:
+      whitelisted_client_ids += [reproduce_tool_client_id]
+    if data.get('aud') not in whitelisted_client_ids:
       raise helpers.UnauthorizedException(
           "The access token doesn't belong to one of the allowed OAuth clients"
-          ': %s.' % response.content)
+          ': %s.' % response.text)
 
     if not data.get('email_verified'):
-      raise helpers.UnauthorizedException(
-          'The email (%s) is not verified: %s.' % (data.get('email'),
-                                                   response.content))
+      raise helpers.UnauthorizedException('The email (%s) is not verified: %s.'
+                                          % (data.get('email'), response.text))
 
     return data['email'], authorization
   except (KeyError, ValueError):
     raise helpers.EarlyExitException(
-        'Parsing the JSON response body failed: %s' % response.content, 500)
+        'Parsing the JSON response body failed: %s' % response.text, 500)
 
 
 def oauth(func):
@@ -258,7 +258,7 @@ def oauth(func):
     if auth_header:
       email, returned_auth_header = get_email_and_access_token(auth_header)
 
-      os.environ['USER_EMAIL'] = email
+      setattr(self.request, '_oauth_email', email)
       self.response.headers[CLUSTERFUZZ_AUTHORIZATION_HEADER] = str(
           returned_auth_header)
       self.response.headers[CLUSTERFUZZ_AUTHORIZATION_IDENTITY] = str(email)
@@ -353,6 +353,10 @@ def post(request_content_type, response_content_type):
         self.response.headers['Content-Type'] = 'application/json'
       elif response_content_type == TEXT:
         self.response.headers['Content-Type'] = 'text/plain'
+      elif response_content_type == HTML:
+        # Don't enforce content security policies in local development mode.
+        if not environment.is_running_on_app_engine_development():
+          self.response.headers['Content-Security-Policy'] = csp.get_default()
 
       if request_content_type == JSON:
         extend_json_request(self.request)
@@ -379,6 +383,10 @@ def get(response_content_type):
         self.response.headers['Content-Type'] = 'application/json'
       elif response_content_type == TEXT:
         self.response.headers['Content-Type'] = 'text/plain'
+      elif response_content_type == HTML:
+        # Don't enforce content security policies in local development mode.
+        if not environment.is_running_on_app_engine_development():
+          self.response.headers['Content-Security-Policy'] = csp.get_default()
 
       extend_request(self.request, self.request.params)
       return func(self, *args, **kwargs)
@@ -394,13 +402,13 @@ def require_csrf_token(func):
   def wrapper(self, *args, **kwargs):
     """Check to see if this handler has a valid CSRF token provided to it."""
     token_value = self.request.get('csrf_token')
-    user = users.get_current_user()
+    user = auth.get_current_user()
     if not user:
       raise helpers.AccessDeniedException('Not logged in.')
 
     query = data_types.CSRFToken.query(
         data_types.CSRFToken.value == token_value,
-        data_types.CSRFToken.user_email == user.email())
+        data_types.CSRFToken.user_email == user.email)
     token = query.get()
     if not token:
       raise helpers.AccessDeniedException('Invalid CSRF token.')

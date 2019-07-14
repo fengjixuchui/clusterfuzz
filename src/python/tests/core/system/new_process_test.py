@@ -14,8 +14,12 @@
 """Tests for process."""
 # pylint: disable=unused-argument
 
+from future import standard_library
+standard_library.install_aliases()
+from builtins import object
+from builtins import range
 import mock
-import Queue
+import queue
 import time
 import unittest
 
@@ -46,7 +50,7 @@ def mock_popen_factory(execute_time,
     def __init__(self, *args, **kwargs):
       """Inits the MockPopen."""
       self.start_time = time.time()
-      self.signal_queue = Queue.Queue()
+      self.signal_queue = queue.Queue()
 
     def poll(self):
       """Mock subprocess.Popen.poll."""
@@ -65,11 +69,11 @@ def mock_popen_factory(execute_time,
 
     def communicate(self, input_data=None):
       """Mock subprocess.Popen.communicate."""
-      for i in xrange(2):
+      for i in range(2):
         timeout = execute_time if i == 0 else sigterm_handler_time
         try:
           received_signal = self.signal_queue.get(block=True, timeout=timeout)
-        except Queue.Empty:
+        except queue.Empty:
           continue
 
         self.received_signals.append((received_signal,
@@ -86,7 +90,7 @@ class PosixProcessTest(unittest.TestCase):
   """Posix Process tests."""
 
   # Allowed error for time calculations.
-  TIME_ERROR = 0.1
+  TIME_ERROR = 0.3
 
   def setUp(self):
     helpers.patch(
@@ -202,7 +206,7 @@ class WindowsProcessTest(unittest.TestCase):
   """Windows Process tests."""
 
   # Allowed error for time calculations.
-  TIME_ERROR = 0.1
+  TIME_ERROR = 0.3
 
   def setUp(self):
     helpers.patch(

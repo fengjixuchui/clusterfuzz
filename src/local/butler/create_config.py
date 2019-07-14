@@ -15,6 +15,8 @@
 
 from __future__ import print_function
 
+from builtins import object
+from builtins import range
 import json
 import os
 import shutil
@@ -132,7 +134,7 @@ def compute_engine_service_account(gcloud, project_id):
 
 def enable_services(gcloud):
   """Enable required services."""
-  for i in xrange(0, len(_REQUIRED_SERVICES), _ENABLE_SERVICE_BATCH_SIZE):
+  for i in range(0, len(_REQUIRED_SERVICES), _ENABLE_SERVICE_BATCH_SIZE):
     end = i + _ENABLE_SERVICE_BATCH_SIZE
     gcloud.run('services', 'enable', *_REQUIRED_SERVICES[i:i + end])
 
@@ -159,7 +161,8 @@ def project_bucket(project_id, bucket_name):
 
 
 def create_new_config(gcloud, project_id, new_config_dir,
-                      domain_verification_tag, bucket_replacements, gce_zone):
+                      domain_verification_tag, bucket_replacements, gce_zone,
+                      firebase_api_key):
   """Create a new config directory."""
   if os.path.exists(new_config_dir):
     print('Overwriting existing directory.')
@@ -172,6 +175,7 @@ def create_new_config(gcloud, project_id, new_config_dir,
       ('test-project', project_id),
       ('domain-verification-tag', domain_verification_tag),
       ('gce-zone', gce_zone),
+      ('firebase-api-key', firebase_api_key),
   ]
   replacements.extend(bucket_replacements)
 
@@ -223,12 +227,18 @@ def set_cors(config_dir, buckets):
     gsutil.run('cors', 'set', cors_file_path, 'gs://' + bucket)
 
 
+def add_service_account_role(gcloud, project_id, service_account, role):
+  """Add an IAM role to a service account."""
+  gcloud.run('projects', 'add-iam-policy-binding', project_id, '--member',
+             'serviceAccount:' + service_account, '--role', role)
+
+
 def execute(args):
+  """Create a new config directory and deployment."""
   # Check this early on, as the deployment at the end would fail otherwise.
   if common.is_git_dirty():
     print('Your checkout contains uncommitted changes. Cannot proceed.')
     sys.exit(1)
-  """Create a new config directory and deployment."""
   verifier = DomainVerifier(args.oauth_client_secrets_path)
 
   gcloud = common.Gcloud(args.project_id)
@@ -240,6 +250,7 @@ def execute(args):
 
   blobs_bucket = project_bucket(args.project_id, 'blobs')
   deployment_bucket = project_bucket(args.project_id, 'deployment')
+
   bucket_replacements = (
       ('test-blobs-bucket', blobs_bucket),
       ('test-deployment-bucket', deployment_bucket),
@@ -253,11 +264,14 @@ def execute(args):
       ('test-shared-corpus-bucket',
        project_bucket(args.project_id, 'shared-corpus')),
       ('test-fuzz-logs-bucket', project_bucket(args.project_id, 'fuzz-logs')),
+      ('test-mutator-plugins-bucket',
+       project_bucket(args.project_id, 'mutator-plugins')),
   )
 
   # Write new configs.
   create_new_config(gcloud, args.project_id, args.new_config_dir,
-                    domain_verification_tag, bucket_replacements, args.gce_zone)
+                    domain_verification_tag, bucket_replacements, args.gce_zone,
+                    args.firebase_api_key)
   prev_dir = os.getcwd()
   os.chdir(args.new_config_dir)
 
@@ -267,9 +281,16 @@ def execute(args):
       gcloud, args.new_config_dir, appengine_region=args.appengine_region)
   verifier.verify(appspot_domain)
 
-  # App Engine service account requires ownership to create GCS buckets.
-  verifier.add_owner(appspot_domain,
-                     app_engine_service_account(args.project_id))
+  # App Engine service account requires:
+  # - Domain ownership to create domain namespaced GCS buckets
+  # - Datastore export permission for periodic backups.
+  # - Service account signing permission for GCS uploads.
+  service_account = app_engine_service_account(args.project_id)
+  verifier.add_owner(appspot_domain, service_account)
+  add_service_account_role(gcloud, args.project_id, service_account,
+                           'roles/datastore.importExportAdmin')
+  add_service_account_role(gcloud, args.project_id, service_account,
+                           'roles/iam.serviceAccountTokenCreator')
 
   # Create buckets now that domain is verified.
   create_buckets(args.project_id, [bucket for _, bucket in bucket_replacements])

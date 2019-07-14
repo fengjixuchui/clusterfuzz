@@ -14,6 +14,7 @@
 """Regression task.
    Find commit ranges where regressions were introduced."""
 
+from builtins import range
 import random
 import time
 
@@ -25,7 +26,7 @@ from build_management import build_manager
 from build_management import revisions
 from datastore import data_handler
 from datastore import data_types
-from fuzzing import tests
+from fuzzing import testcase_manager
 from google_cloud_utils import big_query
 from metrics import logs
 from system import environment
@@ -68,7 +69,9 @@ def save_regression_range(testcase_id, regression_range_start,
   """Saves the regression range and creates blame and impact task if needed."""
   testcase = data_handler.get_testcase_by_id(testcase_id)
   testcase.regression = '%d:%d' % (regression_range_start, regression_range_end)
-  data_handler.update_testcase_comment(testcase, data_types.TaskState.FINISHED)
+  data_handler.update_testcase_comment(
+      testcase, data_types.TaskState.FINISHED,
+      'regressed in range %s' % testcase.regression)
 
   write_to_big_query(testcase, regression_range_start, regression_range_end)
 
@@ -103,7 +106,7 @@ def _testcase_reproduces_in_revision(testcase,
   if not app_path:
     raise errors.BuildSetupError(revision, job_type)
 
-  if tests.check_for_bad_build(job_type, revision):
+  if testcase_manager.check_for_bad_build(job_type, revision):
     log_message = 'Bad build at r%d. Skipping' % revision
     testcase = data_handler.get_testcase_by_id(testcase.key.id())
     data_handler.update_testcase_comment(testcase, data_types.TaskState.WIP,
@@ -111,7 +114,7 @@ def _testcase_reproduces_in_revision(testcase,
     raise errors.BadBuildError(revision, job_type)
 
   test_timeout = environment.get_value('TEST_TIMEOUT', 10)
-  result = tests.test_for_crash_with_retries(
+  result = testcase_manager.test_for_crash_with_retries(
       testcase, testcase_file_path, test_timeout, http_flag=testcase.http_flag)
   return result.is_crash()
 
@@ -122,7 +125,7 @@ def found_regression_near_extreme_revisions(testcase, testcase_file_path,
   """Test to see if we regressed near either the min or max revision."""
   # Test a few of the most recent revisions.
   last_known_crashing_revision = revision_list[max_index]
-  for offset in xrange(1, EXTREME_REVISIONS_TO_TEST + 1):
+  for offset in range(1, EXTREME_REVISIONS_TO_TEST + 1):
     current_index = max_index - offset
     if current_index < min_index:
       break
@@ -147,7 +150,7 @@ def found_regression_near_extreme_revisions(testcase, testcase_file_path,
   # condition for our binary search. If we do crash in that revision, it
   # implies that we regressed between the first commit and our first revision,
   # which we represent as 0:|min_revision|.
-  for _ in xrange(EXTREME_REVISIONS_TO_TEST):
+  for _ in range(EXTREME_REVISIONS_TO_TEST):
     min_revision = revision_list[min_index]
 
     try:
@@ -301,7 +304,7 @@ def find_regression_range(testcase_id, job_type):
       save_regression_range(testcase_id, min_revision, max_revision)
       return
 
-    middle_index = (min_index + max_index) / 2
+    middle_index = (min_index + max_index) // 2
     middle_revision = revision_list[middle_index]
     try:
       is_crash = _testcase_reproduces_in_revision(

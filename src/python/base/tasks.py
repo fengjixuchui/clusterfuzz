@@ -13,6 +13,7 @@
 # limitations under the License.
 """Task queue functions."""
 
+from builtins import object
 import contextlib
 import datetime
 import random
@@ -343,7 +344,7 @@ class _PubSubLeaserThread(threading.Thread):
 
         # Schedule renewals earlier than the extension to avoid race conditions
         # and performing the next extension too late.
-        wait_seconds = min(time_left, self.EXTENSION_TIME_SECONDS / 2)
+        wait_seconds = min(time_left, self.EXTENSION_TIME_SECONDS // 2)
 
         # Wait until the next scheduled renewal, or if the task is complete.
         if self._done_event.wait(wait_seconds):
@@ -423,6 +424,7 @@ def redo_testcase(testcase, tasks, user_email):
   if minimize:
     task_list.append('minimize')
     testcase.minimized_keys = ''
+    testcase.set_metadata('redo_minimize', True, update_testcase=False)
     metadata_keys_to_clear += [
         'current_minimization_phase_attempts', 'minimization_phase'
     ]

@@ -13,8 +13,9 @@
 # limitations under the License.
 """helpers.py contains convenient methods for writing tests."""
 
-import os
+from builtins import object
 import mock
+import os
 import time
 import types
 
@@ -50,8 +51,7 @@ if not hasattr(mock.mock._callable, 'patched'):
   def new_callable(obj):
     if isinstance(obj, (staticmethod, classmethod, types.MethodType)):
       return original_callable(obj.__func__)
-    else:
-      return original_callable(obj)
+    return original_callable(obj)
 
   new_callable.patched = True
   mock.mock._callable = new_callable

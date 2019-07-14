@@ -562,8 +562,6 @@ class StackAnalyzerTestcase(unittest.TestCase):
                                   expected_state, expected_stacktrace,
                                   expected_security_flag)
 
-    environment.remove_key('ASSERTS_HAVE_SECURITY_IMPLICATION')
-
   def test_stack_filtering(self):
     """Test ignore lists and stack frame filtering."""
     data = self._read_test_data('stack_filtering.txt')
@@ -815,7 +813,6 @@ class StackAnalyzerTestcase(unittest.TestCase):
     self._validate_get_crash_data(data, expected_type, expected_address,
                                   expected_state, expected_stacktrace,
                                   expected_security_flag)
-    environment.remove_key('ASSERTS_HAVE_SECURITY_IMPLICATION')
 
   def test_v8_abort_without_source(self):
     """Test the v8 abort error format without source file and line
@@ -832,7 +829,6 @@ class StackAnalyzerTestcase(unittest.TestCase):
     self._validate_get_crash_data(data, expected_type, expected_address,
                                   expected_state, expected_stacktrace,
                                   expected_security_flag)
-    environment.remove_key('ASSERTS_HAVE_SECURITY_IMPLICATION')
 
   def test_v8_oom(self):
     """Test a v8 out of memory condition."""
@@ -1469,8 +1465,6 @@ class StackAnalyzerTestcase(unittest.TestCase):
 
   def test_syzkaller_kasan(self):
     """Test skyzkaller kasan."""
-    os.environ['KASAN'] = 'True'
-
     data = self._read_test_data('kasan_syzkaller.txt')
     expected_type = 'Kernel failure\nUse-after-free READ 8'
     expected_state = ('sock_wake_async+0xb8/0x2b4\n'
@@ -1486,8 +1480,6 @@ class StackAnalyzerTestcase(unittest.TestCase):
 
   def test_kasan_gpf(self):
     """Test a KASan GPF."""
-    os.environ['KASAN'] = 'True'
-
     data = self._read_test_data('kasan_gpf.txt')
     expected_type = 'Kernel failure\nGeneral-protection-fault'
     expected_state = ('keyring_destroy+0xe2/0x186\n'
@@ -1503,8 +1495,6 @@ class StackAnalyzerTestcase(unittest.TestCase):
 
   def test_kasan_null(self):
     """Test a KASan NULL deref."""
-    os.environ['KASAN'] = 'True'
-
     data = self._read_test_data('kasan_null.txt')
     expected_type = 'Kernel failure\nUser-memory-access WRITE 4'
     expected_state = ('snd_seq_fifo_clear+0x20/0xec\n'
@@ -1520,8 +1510,6 @@ class StackAnalyzerTestcase(unittest.TestCase):
 
   def test_kasan_oob_read(self):
     """Test a KASan out-of-bounds read."""
-    os.environ['KASAN'] = 'True'
-
     data = self._read_test_data('kasan_oob_read.txt')
     expected_type = 'Kernel failure\nOut-of-bounds-access READ 1'
     expected_state = ('platform_match+0x100/0x1d8\n'
@@ -1537,8 +1525,6 @@ class StackAnalyzerTestcase(unittest.TestCase):
 
   def test_kasan_uaf(self):
     """Test a KASan use-after-free."""
-    os.environ['KASAN'] = 'True'
-
     data = self._read_test_data('kasan_uaf.txt')
     expected_type = 'Kernel failure\nUse-after-free READ 4'
     expected_state = ('ip6_append_data+ADDRESS/ADDRESS\n'
@@ -1982,6 +1968,20 @@ class StackAnalyzerTestcase(unittest.TestCase):
                                   expected_state, expected_stacktrace,
                                   expected_security_flag)
 
+  def test_check_failure_with_comparison2(self):
+    """Test for special CHECK failure formats (CHECK_EQ, CHECK_LE, etc.)."""
+    data = self._read_test_data('check_failure_with_comparison2.txt')
+    expected_type = 'CHECK failure'
+    expected_address = ''
+    expected_state = ('layout_snapped_paint_offset == snapped_paint_offset '
+                      'in compositing_layer_propert\n')
+    expected_stacktrace = data
+    expected_security_flag = False
+
+    self._validate_get_crash_data(data, expected_type, expected_address,
+                                  expected_state, expected_stacktrace,
+                                  expected_security_flag)
+
   def test_check_failure_with_handle_sigill_disabled(self):
     """Test the CHECK failure crash with ASAN_OPTIONS=handle_sigill=0."""
     data = self._read_test_data('check_failure_with_handle_sigill=0.txt')
@@ -2169,7 +2169,6 @@ class StackAnalyzerTestcase(unittest.TestCase):
     self._validate_get_crash_data(data, expected_type, expected_address,
                                   expected_state, expected_stacktrace,
                                   expected_security_flag)
-    environment.remove_key('ASSERTS_HAVE_SECURITY_IMPLICATION')
 
   def test_glibc_assertion_with_glib(self):
     """Test assertion (glibc) with glib frames."""
@@ -2186,7 +2185,6 @@ class StackAnalyzerTestcase(unittest.TestCase):
     self._validate_get_crash_data(data, expected_type, expected_address,
                                   expected_state, expected_stacktrace,
                                   expected_security_flag)
-    environment.remove_key('ASSERTS_HAVE_SECURITY_IMPLICATION')
 
   def test_chromium_log_assert(self):
     """Tests assertion (chromium's LOG_ASSERT)."""
@@ -2203,7 +2201,6 @@ class StackAnalyzerTestcase(unittest.TestCase):
     self._validate_get_crash_data(data, expected_type, expected_address,
                                   expected_state, expected_stacktrace,
                                   expected_security_flag)
-    environment.remove_key('ASSERTS_HAVE_SECURITY_IMPLICATION')
 
   def test_asan_container_overflow(self):
     """Test an ASan container overflow."""
@@ -2326,6 +2323,33 @@ class StackAnalyzerTestcase(unittest.TestCase):
         'not reached\n'
         'Envoy::Upstream::ClusterManagerImpl::ClusterManagerImpl\n'
         'Envoy::Upstream::ValidationClusterManager::ValidationClusterManager\n')
+
+    expected_stacktrace = data
+    expected_security_flag = True
+    self._validate_get_crash_data(data, expected_type, expected_address,
+                                  expected_state, expected_stacktrace,
+                                  expected_security_flag)
+
+  def test_ignore_regex(self):
+    """Test ignore regex work as expected."""
+
+    def _mock_config_get(_, param, default):
+      """Handle test configuration options."""
+      if param == 'stacktrace.stack_frame_ignore_regexes':
+        return [r'Envoy\:\:Upstream\:\:ClusterManagerImpl']
+      return default
+
+    helpers.patch(self, ['config.local_config.ProjectConfig.get'])
+    self.mock.get.side_effect = _mock_config_get
+
+    data = self._read_test_data('assert_with_panic_keyword.txt')
+    expected_type = 'ASSERT'
+    expected_address = ''
+    expected_state = (
+        'not reached\n'
+        'Envoy::Upstream::ValidationClusterManager::ValidationClusterManager\n'
+        'Envoy::Upstream::ValidationClusterManagerFactory::'
+        'clusterManagerFromProto\n')
 
     expected_stacktrace = data
     expected_security_flag = True

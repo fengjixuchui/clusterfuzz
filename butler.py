@@ -124,7 +124,9 @@ def main():
   parser_py_unittest.add_argument(
       '-v', '--verbose', action='store_true', help='Print logs from tests.')
   parser_py_unittest.add_argument(
-      '-t', '--target', required=True, choices=['appengine', 'core'])
+      '-t', '--target', required=True, choices=['appengine', 'core', 'modules'])
+  parser_py_unittest.add_argument(
+      '-c', '--config-dir', help='Config dir to use for module tests.')
 
   parser_go_unittest = subparsers.add_parser(
       'go_unittest', help='Run Go unit tests.')
@@ -210,15 +212,14 @@ def main():
   parser_run_bot.add_argument(
       '--name', default='test-bot', help='Name of the bot.')
   parser_run_bot.add_argument(
-      '--skip-install-deps',
-      action='store_true',
-      help=('Don\'t install dependencies before running this command (useful '
-            'when you\'re restarting the bot often).'))
-  parser_run_bot.add_argument(
       '--server-storage-path',
       default='local/storage',
       help='Server storage path.')
   parser_run_bot.add_argument('directory', help='Directory to create bot in.')
+  parser_run_bot.add_argument(
+      '--android-serial',
+      help='Serial number of an Android device to connect to instead of '
+      'running normally.')
 
   parser_remote = subparsers.add_parser(
       'remote', help=('Run command-line tasks on a remote bot.'))
@@ -239,6 +240,11 @@ def main():
   parser_create_config.add_argument(
       '--project-id', type=str, required=True, help='Your Cloud Project ID.')
   parser_create_config.add_argument(
+      '--firebase-api-key',
+      type=str,
+      required=True,
+      help='Firebase web API key (for authentication).')
+  parser_create_config.add_argument(
       '--oauth-client-secrets-path',
       type=str,
       required=True,
@@ -253,6 +259,19 @@ def main():
       type=str,
       default='us-central',
       help='Region for App Engine.json.')
+
+  subparsers.add_parser(
+      'integration_tests', help='Run end-to-end integration tests.')
+
+  parser_reproduce = subparsers.add_parser(
+      'reproduce', help='Reproduce a crash or error from a test case.')
+  parser_reproduce.add_argument(
+      '--testcase', type=int, required=True, help='Testcase ID.')
+  parser_reproduce.add_argument(
+      '--build-dir',
+      type=str,
+      required=True,
+      help='Build directory containing the target app and dependencies.')
 
   args = parser.parse_args()
 

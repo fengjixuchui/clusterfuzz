@@ -12,8 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Android specific modules."""
+from __future__ import absolute_import
 
-import adb
-import device
-import gestures
-import logger
+from . import adb
+from . import app
+from . import battery
+from . import constants
+from . import device
+from . import fetch_artifact
+from . import flash
+from . import gestures
+from . import logger
+from . import sanitizer
+from . import settings
+from . import ui
+from . import wifi

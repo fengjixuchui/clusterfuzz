@@ -13,6 +13,7 @@
 # limitations under the License.
 """Update task for updating source and tests."""
 
+from builtins import range
 import datetime
 import os
 import platform
@@ -245,8 +246,8 @@ def update_source_code():
     try:
       extracted_path = zip_archive.extract(filepath, output_directory)
       external_attr = zip_archive.getinfo(filepath).external_attr
-      mode = (external_attr >> 16) & 0777
-      mode |= 0440
+      mode = (external_attr >> 16) & 0o777
+      mode |= 0o440
       os.chmod(extracted_path, mode)
     except:
       error_occurred = True
@@ -301,7 +302,7 @@ def update_tests_if_needed():
       tasks.Task('update_tests', '', ''), expected_task_duration)
 
   # Download and unpack the tests archive.
-  for _ in xrange(retry_limit):
+  for _ in range(retry_limit):
     try:
       shell.remove_directory(data_directory, recreate=True)
       storage.copy_file_from(tests_url, temp_archive)

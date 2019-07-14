@@ -13,6 +13,7 @@
 # limitations under the License.
 """Corpus pruning task."""
 
+from builtins import object
 import collections
 import datetime
 import os
@@ -205,7 +206,7 @@ class Context(object):
     directory."""
     testcases_directory = environment.get_value('FUZZ_INPUTS_DISK')
     directory_path = os.path.join(testcases_directory, name)
-    shell.create_directory_if_needed(directory_path)
+    shell.create_directory(directory_path)
     self._created_directories.append(directory_path)
 
     return directory_path
@@ -217,10 +218,14 @@ class Context(object):
       raise CorpusPruningException('Failed to sync corpus to disk.')
 
     if not self.quarantine_corpus.rsync_to_disk(self.quarantine_corpus_path):
-      raise CorpusPruningException('Failed to sync quarantine corpus to disk.')
+      logs.log_error(
+          'Failed to sync quarantine corpus to disk.',
+          fuzz_target=self.fuzz_target)
 
     if not self.shared_corpus.rsync_to_disk(self.shared_corpus_path):
-      raise CorpusPruningException('Failed to sync shared corpus to disk.')
+      logs.log_error(
+          'Failed to sync shared corpus to disk.', fuzz_target=self.fuzz_target)
+
     self._cross_pollinate_other_fuzzer_corpuses()
 
   def sync_to_gcs(self):
@@ -267,7 +272,7 @@ class Context(object):
 
       corpus_backup_output_directory = os.path.join(self.shared_corpus_path,
                                                     project_qualified_name)
-      shell.create_directory_if_needed(corpus_backup_output_directory)
+      shell.create_directory(corpus_backup_output_directory)
       archive.unpack(corpus_backup_local_path, corpus_backup_output_directory)
       shell.remove_file(corpus_backup_local_path)
 
@@ -430,7 +435,7 @@ class CorpusPruner(object):
       unit_path = self._quarantine_unit(unit_path, quarantine_corpus_path)
       num_bad_units += 1
 
-      if crash_analyzer.ignore_stacktrace(state.crash_state, state.crash_type):
+      if crash_analyzer.ignore_stacktrace(state.crash_stacktrace):
         continue
 
       # Local de-duplication.
@@ -629,7 +634,7 @@ def do_corpus_pruning(context, last_execution_failed, revision):
 
   result = CorpusPruningResult(
       coverage_info=coverage_info,
-      crashes=crashes.values(),
+      crashes=list(crashes.values()),
       fuzzer_binary_name=fuzzer_binary_name,
       revision=environment.get_value('APP_REVISION'))
 
@@ -667,7 +672,7 @@ def _process_corpus_crashes(context, result):
     else:
       unit_path = crash.unit_path
 
-    with open(unit_path) as f:
+    with open(unit_path, 'rb') as f:
       key = blobs.write_blob(f)
 
     # Set the absolute_path property of the Testcase to a file in FUZZ_INPUTS
@@ -738,7 +743,7 @@ def _get_cross_pollinate_fuzzers(engine, current_fuzzer_name):
     )
 
   return random.SystemRandom().sample(
-      cross_pollinate_fuzzers.values(),
+      list(cross_pollinate_fuzzers.values()),
       min(len(cross_pollinate_fuzzers), CROSS_POLLINATE_FUZZER_COUNT))
 
 

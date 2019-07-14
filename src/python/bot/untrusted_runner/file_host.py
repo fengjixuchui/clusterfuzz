@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """File operations host (client)."""
+from __future__ import absolute_import
 
+from builtins import range
 import os
 import shutil
 
-import file_utils
-import host
+from . import file_utils
+from . import host
 
 from metrics import logs
 from protos import untrusted_runner_pb2
@@ -36,7 +38,7 @@ def is_directory_parent(path, directory):
     return False
 
   return all(path_components[i] == directory_components[i]
-             for i in xrange(len(directory_components)))
+             for i in range(len(directory_components)))
 
 
 def rebase_to_worker_root(host_path):
@@ -187,6 +189,13 @@ def clear_testcase_directories():
       recreate=True)
   remove_directory(
       rebase_to_worker_root(environment.get_value('FUZZ_INPUTS_DISK')),
+      recreate=True)
+
+
+def clear_build_urls_directory():
+  """Clear the build urls directory on the worker."""
+  remove_directory(
+      rebase_to_worker_root(environment.get_value('BUILD_URLS_DIR')),
       recreate=True)
 
 

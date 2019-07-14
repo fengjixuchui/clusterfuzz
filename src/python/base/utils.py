@@ -13,6 +13,10 @@
 # limitations under the License.
 """Common utility functions."""
 
+from builtins import range
+from future import standard_library
+standard_library.install_aliases()
+from past.builtins import basestring
 import ast
 import datetime
 import functools
@@ -21,11 +25,11 @@ import hashlib
 import inspect
 import os
 import random
+import requests
 import sys
 import time
-import urllib
-import urllib2
-import urlparse
+import urllib.parse
+import urllib.request
 import weakref
 
 from base import errors
@@ -33,7 +37,6 @@ from base import retry
 from config import local_config
 from metrics import logs
 from system import environment
-from system import shell
 
 try:
   import psutil
@@ -108,18 +111,14 @@ def decode_to_unicode(obj, encoding='utf-8'):
     function='base.utils.fetch_url')
 def fetch_url(url):
   """Fetch url content."""
-  request = urllib2.Request(url)
   operations_timeout = environment.get_value('URL_BLOCKING_OPERATIONS_TIMEOUT')
 
-  try:
-    return urllib2.urlopen(request, timeout=operations_timeout).read()
-  except urllib2.HTTPError as error:
-    if error.code == 404:
-      # Url does not exist, no need to retry. Bail out and return None to caller
-      # to gracefully detect this.
-      return None
+  response = requests.get(url, timeout=operations_timeout)
+  if response.status_code == 404:
+    return None
 
-    raise
+  response.raise_for_status()
+  return response.text
 
 
 def fields_match(string_1,
@@ -140,7 +139,7 @@ def fields_match(string_1,
     return False
 
   min_fields_length = min(len(string_1_fields), len(string_2_fields))
-  for i in xrange(min_fields_length):
+  for i in range(min_fields_length):
     if string_1_fields[i] != string_2_fields[i]:
       return False
 
@@ -153,7 +152,7 @@ def file_path_to_file_url(path):
     return ''
 
   path = path.lstrip(WINDOWS_PREFIX_PATH)
-  return urlparse.urljoin('file:', urllib.pathname2url(path))
+  return urllib.parse.urljoin(u'file:', urllib.request.pathname2url(path))
 
 
 def filter_file_list(file_list):
@@ -168,8 +167,8 @@ def filter_file_list(file_list):
       continue
 
     # Do a os specific case normalization before comparison.
-    if (os.path.normcase(file_path) in map(os.path.normcase,
-                                           filtered_file_list)):
+    if (os.path.normcase(file_path) in list(
+        map(os.path.normcase, filtered_file_list))):
       continue
 
     filtered_file_list.append(file_path)
@@ -224,6 +223,17 @@ def get_application_id():
     app_id = app_id[psep + 1:]
 
   return app_id
+
+
+def service_account_email():
+  """Get the service account name."""
+  # TODO(ochang): Detect GCE and return the GCE service account instead.
+  email_id = get_application_id()
+  if ':' in email_id:
+    domain, application_id = email_id.split(':')
+    email_id = application_id + '.' + domain
+
+  return email_id + '@appspot.gserviceaccount.com'
 
 
 def get_bot_testcases_file_path(input_directory):
@@ -306,17 +316,6 @@ def get_file_contents_with_fatal_error_on_failure(path):
     logs.log_error('Unable to read file `%s\'' % path)
 
   raise errors.BadStateError
-
-
-def get_launch_path_for_script(script_directory, script_filename):
-  """Return launch path for a script."""
-  # Hack for Java Scripts.
-  script_filename = script_filename.replace('.class', '')
-
-  interpreter_path = shell.get_interpreter_for_command(script_filename)
-  script_absolute_path = os.path.join(script_directory, script_filename)
-  script_launch_path = '%s %s' % (interpreter_path, script_absolute_path)
-  return script_launch_path
 
 
 def get_line_seperator(label=''):
@@ -442,7 +441,7 @@ def is_binary_file(file_path, bytes_to_read=1024):
   if file_extension in TEXT_EXTENSIONS:
     return False
 
-  text_characters = map(chr, range(32, 128)) + ['\r', '\n', '\t']
+  text_characters = list(map(chr, list(range(32, 128)))) + ['\r', '\n', '\t']
   try:
     file_handle = open(file_path, 'rb')
     data = file_handle.read(bytes_to_read)
@@ -461,7 +460,7 @@ def is_recursive_call():
   try:
     stack_frames = inspect.stack()
     caller_name = stack_frames[1][3]
-    for stack_frame_index in xrange(2, len(stack_frames)):
+    for stack_frame_index in range(2, len(stack_frames)):
       if caller_name == stack_frames[stack_frame_index][3]:
         return True
   except:
@@ -524,7 +523,7 @@ def python_gc():
   # gc_collect isn't perfectly synchronous, because it may
   # break reference cycles that then take time to fully
   # finalize. Call it thrice and hope for the best.
-  for _ in xrange(3):
+  for _ in range(3):
     gc.collect()
 
 
@@ -563,7 +562,7 @@ def read_data_from_file(file_path, eval_data=True, default=None):
   failure_wait_interval = environment.get_value('FAIL_WAIT')
   file_content = None
   retry_limit = environment.get_value('FAIL_RETRIES')
-  for _ in xrange(retry_limit):
+  for _ in range(retry_limit):
     try:
       file_handle = open(file_path, 'rb')
       file_content = file_handle.read()
@@ -731,7 +730,7 @@ def timeout(duration):
       try:
         async_result = THREAD_POOL.apply_async(func, args=args, kwds=kwargs)
         return async_result.get(timeout=duration)
-      except Exception:
+      except multiprocessing.TimeoutError:
         # Sleep for some minutes in order to wait for flushing metrics.
         time.sleep(120)
 
@@ -783,7 +782,7 @@ def write_data_to_file(content, file_path, append=False):
   file_mode = 'ab' if append else 'wb'
   retry_limit = environment.get_value('FAIL_RETRIES')
 
-  for _ in xrange(retry_limit):
+  for _ in range(retry_limit):
     try:
       file_handle = open(file_path, file_mode)
       file_handle.write(content_string)
@@ -837,7 +836,7 @@ def read_from_handle_truncated(file_handle, max_len):
     return file_handle.read()
 
   # Read first and last |half_max_len| bytes.
-  half_max_len = max_len / 2
+  half_max_len = max_len // 2
   start = file_handle.read(half_max_len)
   file_handle.seek(file_size - half_max_len, os.SEEK_SET)
   end = file_handle.read(half_max_len)

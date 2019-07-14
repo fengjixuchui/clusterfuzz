@@ -12,17 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Simple minimizers for common tasks."""
+from __future__ import absolute_import
 
-import minimizer
+from builtins import range
+
+from . import minimizer
 
 
-class SinglePassMinimizer(minimizer.Minimizer):
+class SinglePassMinimizer(minimizer.Minimizer):  # pylint:disable=abstract-method
   """Do a single pass over the token list."""
 
   def _execute(self, data):
     """Attempt to remove each token starting from the last one."""
     testcase = minimizer.Testcase(data, self)
-    for i in reversed(xrange(len(testcase.tokens))):
+    for i in reversed(list(range(len(testcase.tokens)))):
       hypothesis = [i]
       testcase.prepare_test(hypothesis)
 
@@ -30,7 +33,7 @@ class SinglePassMinimizer(minimizer.Minimizer):
     return testcase
 
 
-class EmptyTokenRemover(minimizer.Minimizer):
+class EmptyTokenRemover(minimizer.Minimizer):  # pylint:disable=abstract-method
   """Attempt to remove empty tokens."""
 
   def __init__(self, *args, **kwargs):

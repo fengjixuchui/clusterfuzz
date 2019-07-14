@@ -13,10 +13,14 @@
 # limitations under the License.
 """Fuzzer options."""
 
-import ConfigParser
+from future import standard_library
+standard_library.install_aliases()
+from builtins import object
+import configparser
 import os
 import random
 import re
+import six
 
 from bot.fuzzers import utils as fuzzer_utils
 from bot.fuzzers.afl import constants as afl_constants
@@ -68,7 +72,7 @@ class FuzzerArguments(object):
 
   def list(self):
     """Return arguments as a list."""
-    return ['-%s=%s' % (key, value) for key, value in self.flags.iteritems()]
+    return ['-%s=%s' % (key, value) for key, value in six.iteritems(self.flags)]
 
 
 class FuzzerOptions(object):
@@ -86,11 +90,12 @@ class FuzzerOptions(object):
     else:
       self._cwd = os.path.dirname(options_file_path)
 
-    self._config = ConfigParser.ConfigParser()
-    try:
-      self._config.read(options_file_path)
-    except ConfigParser.Error:
-      raise FuzzerOptionsException('Failed to parse fuzzer options file.')
+    self._config = configparser.ConfigParser()
+    with open(options_file_path, 'r') as f:
+      try:
+        self._config.read_file(f)
+      except configparser.Error:
+        raise FuzzerOptionsException('Failed to parse fuzzer options file.')
 
   def _get_dict_path(self, relative_dict_path):
     """Return a full path to the dictionary."""
@@ -109,7 +114,7 @@ class FuzzerOptions(object):
     Variables are assumed to contain no lower case letters.
     """
     env = {}
-    for var_name, var_value in self._get_option_section('env').iteritems():
+    for var_name, var_value in six.iteritems(self._get_option_section('env')):
 
       var_name = var_name.upper()
       if var_name in ENV_VAR_WHITELIST:
@@ -120,8 +125,8 @@ class FuzzerOptions(object):
   def get_engine_arguments(self, engine):
     """Return a list of fuzzer options."""
     arguments = {}
-    for option_name, option_value in (
-        self._get_option_section(engine).iteritems()):
+    for option_name, option_value in six.iteritems(
+        self._get_option_section(engine)):
       # Check option value for usage of random() function.
       match = self.OPTIONS_RANDOM_REGEX.match(option_value)
       if match:

@@ -1,5 +1,5 @@
 <!--
-  Copyright 2018 Google LLC
+  Copyright 2019 Google LLC
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -37,16 +37,26 @@
       const emptyResponse = JSON.stringify({
         queryString: "Test test",
         queryUrl: "http://somethingsomething",
-        issueUrlPrefix: "http://something",
         items: []
       });
       const response = JSON.stringify({
         queryString: "Test test",
         queryUrl: "http://somethingsomething",
-        issueUrlPrefix: "http://something",
         items: [
-          {id: 1234, summary: "Test query"},
-          {id: 9999, summary: "Test query 2"}
+          {
+            issue: {
+              id: 1234,
+              summary: "Test query"
+            },
+            url: 'http://something/1234',
+          },
+          {
+            issue: {
+              id: 9999,
+              summary: "Test query 2"
+            },
+            url: 'http://something/9999',
+          },
         ]
       });
 

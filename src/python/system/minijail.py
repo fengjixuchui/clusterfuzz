@@ -13,6 +13,7 @@
 # limitations under the License.
 """Running processes with minijail."""
 
+from builtins import object
 from collections import namedtuple
 
 import os
@@ -159,7 +160,7 @@ class MinijailChroot(object):
     if directory[0] == '/':
       directory = directory[1:]
 
-    shell.create_directory_if_needed(
+    shell.create_directory(
         os.path.join(self._chroot_dir, directory), create_intermediates=True)
 
   @property
@@ -322,6 +323,7 @@ class MinijailProcessRunner(new_process.ProcessRunner):
   def run(self,
           additional_args=None,
           max_stdout_len=None,
+          extra_env=None,
           stdin=subprocess.PIPE,
           stdout=subprocess.PIPE,
           stderr=subprocess.STDOUT,
@@ -341,6 +343,9 @@ class MinijailProcessRunner(new_process.ProcessRunner):
     passed_env = popen_args.pop('env', None)
     from bot.untrusted_runner import environment as untrusted_environment
     env = untrusted_environment.get_env_for_untrusted_process(passed_env)
+    if extra_env is not None:
+      env.update(extra_env)
+
     env['PATH'] = self.PATH_ENVIRONMENT_VALUE
 
     return MinijailChildProcess(

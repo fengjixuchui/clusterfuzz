@@ -12,16 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Fuzzer statistics handler."""
+from __future__ import absolute_import
 
+from builtins import object
+from future import standard_library
+standard_library.install_aliases()
 import cgi
 import datetime
 import re
-import urllib
+import six
+import urllib.parse
 import yaml
 
 from googleapiclient.errors import HttpError
 
-import base_handler
+from . import base_handler
 
 from base import external_users
 from base import memoize
@@ -187,7 +192,7 @@ def _parse_stats_column_descriptions(stats_column_descriptions):
 
   try:
     result = yaml.safe_load(stats_column_descriptions)
-    for key, value in result.iteritems():
+    for key, value in six.iteritems(result):
       result[key] = cgi.escape(value)
 
     return result
@@ -280,7 +285,7 @@ def _build_rows(result, columns, rows, group_by):
 
 def _get_cloud_storage_link(bucket_path):
   """Return a clickable link to a cloud storage file given the bucket path."""
-  return '/gcs-redirect?' + urllib.urlencode({'path': bucket_path})
+  return '/gcs-redirect?' + urllib.parse.urlencode({'path': bucket_path})
 
 
 def _get_filter_from_job(job):
@@ -382,8 +387,8 @@ def _get_date(date_value, days_ago):
 class Handler(base_handler.Handler):
   """Group by day handler."""
 
-  @handler.get(handler.HTML)
   @handler.unsupported_on_local_server
+  @handler.get(handler.HTML)
   def get(self):
     """Handle a GET request."""
     # Create a list of externally contributed fuzzers.
@@ -514,6 +519,6 @@ class RefreshCacheHandler(base_handler.Handler):
 
     # Cache child fuzzer -> logs bucket mappings.
     for fuzz_target in fuzz_targets:
-      # pylint: disable=protected-access
+      # pylint: disable=protected-access,unexpected-keyword-arg
       fuzzer_logs_context._get_logs_bucket_from_fuzzer(
           fuzz_target.fully_qualified_name(), __memoize_force__=True)

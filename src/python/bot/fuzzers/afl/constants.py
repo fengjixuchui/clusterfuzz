@@ -43,6 +43,8 @@ STDERR_FILENAME_ENV_VAR = 'AFL_DRIVER_STDERR_DUPLICATE_FILENAME'
 
 DONT_DEFER_FORKSERVER = 'AFL_DRIVER_DONT_DEFER'
 
+CLOSE_FD_MASK_ENV_VAR = 'AFL_DRIVER_CLOSE_FD_MASK'
+
 MAX_FILE_BYTES = 2**20  # 1 MB
 
 # This should be as high as possible, otherwise AFL will restart the binary too
@@ -57,3 +59,5 @@ RESUME_INPUT = '-'
 # Don't let afl set a memory limit. Otherwise we will not be able to use
 # sanitizers.
 MAX_MEMORY_LIMIT = 'none'
+
+CORE_PATTERN_FILE_PATH = '/proc/sys/kernel/core_pattern'

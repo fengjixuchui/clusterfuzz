@@ -13,7 +13,9 @@
 # limitations under the License.
 """Runs http(s) server in the background."""
 
-import BaseHTTPServer
+from future import standard_library
+standard_library.install_aliases()
+import http.server
 import mimetypes
 import os
 import socket
@@ -68,11 +70,11 @@ def guess_mime_type(filename):
   return mimetypes.guess_type(filename)[0]
 
 
-class BotHTTPServer(BaseHTTPServer.HTTPServer):
+class BotHTTPServer(http.server.HTTPServer):
   """Host the bot's test case directories over HTTP."""
 
   def __init__(self, server_address, handler_class):
-    BaseHTTPServer.HTTPServer.__init__(self, server_address, handler_class)
+    http.server.HTTPServer.__init__(self, server_address, handler_class)
 
   def _handle_request_noblock(self):
     """Process a single http request."""
@@ -87,10 +89,10 @@ class BotHTTPServer(BaseHTTPServer.HTTPServer):
         self.close_request(request)
 
 
-class RequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
+class RequestHandler(http.server.BaseHTTPRequestHandler):
   """Handler for get requests to test cases."""
 
-  def do_get(self):
+  def do_GET(self):  # pylint: disable=invalid-name
     """Handle a GET request."""
     absolute_path = get_absolute_testcase_file(self.path)
     if not absolute_path:
@@ -122,7 +124,7 @@ class RequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 
 
 def run_server(host, port):
-  """Run the HTTP/HTTPS server on the given port."""
+  """Run the HTTP server on the given port."""
   httpd = BotHTTPServer((host, port), RequestHandler)
   httpd.serve_forever()
 
@@ -143,11 +145,6 @@ def start_server_thread(host, port):
 def start():
   """Initialize the HTTP server on the specified ports."""
   http_host = 'localhost'
-  if environment.get_value('ANDROID_GCE'):
-    # Android on GCE doesn't rely on forwarding, and device instances connect
-    # directly to the host ip/port through the internal network.
-    http_host = environment.get_value('ANDROID_GCE_HOST_IP')
-
   http_port_1 = environment.get_value('HTTP_PORT_1', 8000)
   http_port_2 = environment.get_value('HTTP_PORT_2', 8080)
   if not port_is_open(http_host, http_port_1):

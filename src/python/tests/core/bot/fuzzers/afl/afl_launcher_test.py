@@ -14,6 +14,7 @@
 """Test the launcher.py script for AFL-based fuzzers."""
 # pylint: disable=protected-access
 
+from builtins import range
 import mock
 import os
 import unittest
@@ -210,7 +211,7 @@ class AflFuzzInputDirectoryTest(LauncherTestBase):
     # Test that skip_deterministic is set to False when there are a small number
     # of files in the corpus.
     num_files = 3
-    for file_num in xrange(num_files):
+    for file_num in range(num_files):
       self._create_file('file' + str(file_num))
 
     afl_input = self._new_afl_input()
@@ -218,7 +219,7 @@ class AflFuzzInputDirectoryTest(LauncherTestBase):
 
     # Test that skip_deterministic is set to False when the "small number" of
     # files permitted for determnisitic steps is exceeded.
-    for file_num in xrange(num_files, afl_input.MIN_INPUTS_FOR_SKIP):
+    for file_num in range(num_files, afl_input.MIN_INPUTS_FOR_SKIP):
       self._create_file('file' + str(file_num))
 
     afl_input = self._new_afl_input()
@@ -261,7 +262,7 @@ class AflFuzzInputDirectoryTest(LauncherTestBase):
     number is larger than the number of files."""
     self.strategies.use_corpus_subset = True
     self.strategies.corpus_subset_size = 75
-    for file_num in xrange(self.strategies.corpus_subset_size - 10):
+    for file_num in range(self.strategies.corpus_subset_size - 10):
       self._create_file(str(file_num))
 
     afl_input = self._new_afl_input()
@@ -277,7 +278,7 @@ class AflFuzzInputDirectoryTest(LauncherTestBase):
     self.strategies.corpus_subset_size = 75
     # Now test create_new_if_needed obeys corpus_subset.
     self.strategies.use_corpus_subset = True
-    for file_num in xrange(self.strategies.corpus_subset_size):
+    for file_num in range(self.strategies.corpus_subset_size):
       self._create_file(str(file_num))
 
     afl_input = self._new_afl_input()
@@ -861,10 +862,24 @@ class AlfConfigTest(LauncherTestBase):
     self.assertIn('-x/build_dir/my_dict.dict',
                   self._get_config().additional_afl_arguments)
 
+  def test_close_fd_mask(self):
+    """"Test that AflConfig instructs afl_driver to close fd mask if specified
+    by the libfuzzer section of a .options file."""
+
+    fd_mask_value = 3
+    self._create_options_file(
+        ('[libfuzzer]\n'
+         'close_fd_mask={fd_mask_value}\n'
+         'max_len=1337\n').format(fd_mask_value=fd_mask_value))
+
+    afl_additional_env_vars = self._get_config().additional_env_vars
+    self.assertIn('AFL_DRIVER_CLOSE_FD_MASK', afl_additional_env_vars)
+    self.assertEqual(
+        str(fd_mask_value), afl_additional_env_vars['AFL_DRIVER_CLOSE_FD_MASK'])
+
 
 class ListFullFilePathsTest(LauncherTestBase):
-  """Tests for list_full_file_paths and list_full_file_paths_recursive
-  functions."""
+  """Tests for list_full_file_paths."""
   DUMMY_2_FILENAME = 'dummyfile2'
   DUMMY_3_FILENAME = 'dummyfile3'
 
@@ -889,24 +904,90 @@ class ListFullFilePathsTest(LauncherTestBase):
         launcher.list_full_file_paths(self.INPUT_DIR),
         [self.dummy_file_path, self.dummy_3_file_path])
 
-  def test_list_full_file_paths_recursive(self):
-    """Test that list_full_file_paths_recursive works as intended."""
 
-    # Test it works with just files:
-    self._assert_elements_equal(
-        launcher.list_full_file_paths_recursive(self.INPUT_DIR),
-        [self.dummy_file_path, self.dummy_3_file_path])
+class CorpusTest(fake_filesystem_unittest.TestCase):
+  """Tests for Corpus and CorpusElement classes."""
 
-    # Test it works with a directory:
-    dummy_dir = os.path.join(self.INPUT_DIR, 'dummydir')
-    self.fs.CreateDirectory(dummy_dir)
+  def setUp(self):
+    test_utils.set_up_pyfakefs(self)
+    self.corpus = launcher.Corpus()
+    self.guard = 0
 
-    dummy_2_path = os.path.join(dummy_dir, self.DUMMY_2_FILENAME)
-    self.fs.CreateFile(dummy_2_path)
+  def _get_unique_feature(self):
+    """Returns an arbitrary, unique, feature for use in testing."""
+    guard = self.guard
+    self.guard += 1
+    default_hit_count = 1
+    return (guard, default_hit_count)
 
-    self._assert_elements_equal(
-        launcher.list_full_file_paths_recursive(self.INPUT_DIR),
-        [self.dummy_file_path, dummy_2_path, self.dummy_3_file_path])
+  def _create_file(self, path, size=1):
+    """Creates a file at |path| that is |size| bytes large."""
+    self.fs.CreateFile(path, contents=size * 'A')
+
+  def test_corpus_element(self):
+    """Tests CorpusElement class."""
+    path = '/path/to/file'
+    size = 20
+    self._create_file(path, size=size)
+    corpus_element = launcher.CorpusElement(path)
+    self.assertEqual(path, corpus_element.path)
+    self.assertEqual(size, corpus_element.size)
+
+  def test_element_paths(self):
+    """Tests that element_paths is the set of filepaths of elements in the
+    corpus."""
+    filenames = ['file_1', 'file_2']
+    for filename in filenames:
+      feature = self._get_unique_feature()
+      self._create_file(filename)
+      self.corpus.associate_features_with_file([feature], filename)
+    self.assertEqual(set(filenames), self.corpus.element_paths)
+
+  def test_associate_new_features_with_file(self):
+    """Tests that associate_features_with_file associates new features with a
+    file."""
+    # Create an arbitrary number of features.
+    features = [self._get_unique_feature() for _ in range(3)]
+    filename = 'element'
+    self._create_file(filename)
+    self.corpus.associate_features_with_file(features, filename)
+    for feature in features:
+      self.assertEqual(filename,
+                       self.corpus.features_and_elements[feature].path)
+
+  def test_associate_feature_with_smaller_file(self):
+    """Tests that associate_features_with_file associates features with the
+    smallest file. Also verify that an element that isn't the smallest
+    associated with any feature isn't part of the corpus."""
+    features = [self._get_unique_feature()]
+    larger_filename = 'larger'
+    self._create_file(larger_filename, size=2)
+    self.corpus.associate_features_with_file(features, larger_filename)
+    smaller_filename = 'smaller'
+    self._create_file(smaller_filename, size=1)
+    self.corpus.associate_features_with_file(features, smaller_filename)
+    self.assertEqual(smaller_filename,
+                     self.corpus.features_and_elements[features[0]].path)
+    self.assertEqual(set([smaller_filename]), self.corpus.element_paths)
+
+  def test_file_with_one_feature_remains(self):
+    """Test that a file remains in the corpus as long as it the smallest element
+    for at least one feature."""
+    feature_1 = self._get_unique_feature()
+    feature_2 = self._get_unique_feature()
+    larger_filename = 'larger'
+    self._create_file(larger_filename, size=2)
+    self.corpus.associate_features_with_file([feature_1, feature_2],
+                                             larger_filename)
+    smaller_filename = 'smaller'
+    self._create_file(smaller_filename, size=1)
+    self.corpus.associate_features_with_file([feature_2], smaller_filename)
+    self.assertEqual(smaller_filename,
+                     self.corpus.features_and_elements[feature_2].path)
+    self.assertEqual(larger_filename,
+                     self.corpus.features_and_elements[feature_1].path)
+    self.assertEqual(
+        set([smaller_filename, larger_filename]), self.corpus.element_paths)
 
 
 def dont_use_strategies(obj):

@@ -15,14 +15,14 @@
   crbug.com/665652 on why we need it."""
 
 from handlers import base_handler
-from issue_management import issue_tracker_utils
 from libs import helpers
+from libs.issue_management import issue_tracker_utils
 
 
 class Handler(base_handler.Handler):
   """Handler that redirects user to the issue URL."""
 
-  def get(self, testcase_id, issue_id):
+  def get(self, testcase_id):
     """Redirect user to the correct URL."""
     testcase = helpers.get_testcase(testcase_id)
     issue_url = helpers.get_or_exit(
@@ -30,4 +30,4 @@ class Handler(base_handler.Handler):
         'Issue tracker for testcase (id=%s) is not found.' % testcase_id,
         'Failed to get the issue tracker URL.')
 
-    self.redirect(issue_url + issue_id)
+    self.redirect(issue_url)

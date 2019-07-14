@@ -15,10 +15,13 @@
 # pylint: disable=protected-access
 """Script to convert python Datastore types to Go and protobufs."""
 
+from builtins import object
+from past.builtins import basestring
 import ast
 import inspect
 import os
 import re
+import six
 import subprocess
 
 from src.python.datastore import data_types
@@ -128,9 +131,9 @@ class DsModel(object):
     PropertyOrderVisitor(ds_model, sort_order).visit(data_types_ast)
 
     if self.ndb:
-      self.properties = ds_model._properties.items()
+      self.properties = six.iteritems(ds_model._properties)
     else:
-      self.properties = ds_model.properties().items()
+      self.properties = six.iteritems(ds_model.properties())
 
     self.properties = [
         (name, DsType(value, self.ndb)) for name, value in self.properties
@@ -185,13 +188,10 @@ def capitalize_acronyms(name):
 
 def py_to_go_type(py_type):
   """Return the Go equivalent for a python type."""
-  if py_type in [str, unicode, basestring]:
+  if isinstance(py_type, basestring):
     return 'string'
 
-  if py_type == int:
-    return 'int'
-
-  if py_type == long:
+  if py_type in six.integer_types:
     return 'int64'
 
   if py_type == float:

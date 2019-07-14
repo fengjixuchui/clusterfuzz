@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """run_server.py run the Clusterfuzz server locally."""
+from __future__ import print_function
+from future import standard_library
+standard_library.install_aliases()
 from distutils import spawn
 import os
 import shutil
 import threading
 import time
-import urllib2
+import urllib.request
 
 from local.butler import appengine
 from local.butler import common
@@ -32,7 +35,7 @@ def bootstrap_db():
   def bootstrap():
     # Wait for the server to run.
     time.sleep(10)
-    print 'Bootstrapping datastore...'
+    print('Bootstrapping datastore...')
     common.execute(
         ('python butler.py run setup '
          '--non-dry-run --local --config-dir={config_dir}'
@@ -69,6 +72,8 @@ def bootstrap_gcs(storage_path):
                       config.get('env.SHARED_CORPUS_BUCKET'))
   create_local_bucket(local_gcs_buckets_path,
                       config.get('env.FUZZ_LOGS_BUCKET'))
+  create_local_bucket(local_gcs_buckets_path,
+                      config.get('env.MUTATOR_PLUGINS_BUCKET'))
 
   # Symlink local GCS bucket path to appengine src dir to bypass sandboxing
   # issues.
@@ -96,15 +101,19 @@ def start_cron_threads():
   request_timeout = 10 * 60  # 10 minutes.
 
   def trigger(interval_seconds, target):
+    """Trigger a cron job."""
     while True:
       time.sleep(interval_seconds)
 
-      url = 'http://{host}/{target}'.format(
-          host=constants.CRON_SERVICE_HOST, target=target)
-      request = urllib2.Request(url)
-      request.add_header('X-Appengine-Cron', 'true')
-      response = urllib2.urlopen(request, timeout=request_timeout)
-      response.read(60)  # wait for request to finish.
+      try:
+        url = 'http://{host}/{target}'.format(
+            host=constants.CRON_SERVICE_HOST, target=target)
+        request = urllib.request.Request(url)
+        request.add_header('X-Appengine-Cron', 'true')
+        response = urllib.request.urlopen(request, timeout=request_timeout)
+        response.read(60)  # wait for request to finish.
+      except Exception:
+        continue
 
   crons = (
       (90, 'cleanup'),
@@ -142,7 +151,7 @@ def execute(args):
   # Clean storage directory if needed.
   if args.bootstrap or args.clean:
     if os.path.exists(args.storage_path):
-      print 'Clearing local datastore by removing %s.' % args.storage_path
+      print('Clearing local datastore by removing %s.' % args.storage_path)
       shutil.rmtree(args.storage_path)
   if not os.path.exists(args.storage_path):
     os.makedirs(args.storage_path)
@@ -182,6 +191,7 @@ def execute(args):
         '--env_var PUBSUB_EMULATOR_HOST={pubsub_emulator_host} '
         '--env_var LOCAL_GCS_BUCKETS_PATH=local_gcs '
         '--env_var LOCAL_GCS_SERVER_HOST={local_gcs_server_host} '
+        '--specified_service_ports=cron-service:{cron_port} '
         'src/appengine src/appengine/cron-service.yaml'.format(
             dev_appserver_path=_dev_appserver_path(),
             project=constants.TEST_APP_ID,
@@ -191,8 +201,14 @@ def execute(args):
             datastore_emulator_port=constants.DATASTORE_EMULATOR_PORT,
             log_level=args.log_level,
             pubsub_emulator_host=constants.PUBSUB_EMULATOR_HOST,
-            local_gcs_server_host=constants.LOCAL_GCS_SERVER_HOST))
+            local_gcs_server_host=constants.LOCAL_GCS_SERVER_HOST,
+            cron_port=constants.CRON_SERVICE_PORT),
+        extra_environments={
+            # PYTHONPATH on CI includes an outdated App Engine SDK, which has
+            # bugs in dev_appserver.py.
+            'PYTHONPATH': '',
+        })
   except KeyboardInterrupt:
-    print 'Server has been stopped. Exit.'
+    print('Server has been stopped. Exit.')
     pubsub_emulator.cleanup()
     local_gcs.terminate()

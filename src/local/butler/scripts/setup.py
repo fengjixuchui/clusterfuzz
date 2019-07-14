@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Initial datastore setup."""
+from __future__ import print_function
+
+from builtins import object
+import six
 
 from google.cloud import monitoring_v3
 
@@ -121,7 +125,7 @@ corpus_size: "Size of the minimized corpus generated based on code coverage (num
 avg_exec_per_sec: "Average number of testcases executed per second"
 fuzzing_time_percent: "Percent of expected fuzzing time that is actually spent fuzzing."
 new_tests_added: "New testcases added to the corpus during fuzzing based on code coverage"
-new_cov_features: "New coverage features based on new tests added to corpus."
+new_features: "New coverage features based on new tests added to corpus."
 regular_crash_percent: "Percent of fuzzing runs that had regular crashes (other than ooms, leaks, timeouts, startup and bad instrumentation crashes)"
 oom_percent: "Percent of fuzzing runs that crashed on OOMs (should be 0)"
 leak_percent: "Percent of fuzzing runs that crashed on memory leaks (should be 0)"
@@ -141,7 +145,7 @@ _CORPUS_SIZE as corpus_size,
 avg(t.average_exec_per_sec) as avg_exec_per_sec,
 avg(t.fuzzing_time_percent) as fuzzing_time_percent,
 sum(t.new_units_added) as new_tests_added,
-sum(t.merge_new_features) as new_cov_features,
+sum(t.new_features) as new_features,
 avg(t.crash_count*100) as regular_crash_percent,
 avg(t.oom_count*100) as oom_percent,
 avg(t.leak_count*100) as leak_percent,
@@ -202,44 +206,49 @@ def setup_config(non_dry_run):
     config = data_types.Config()
 
     if non_dry_run:
-      print 'Creating config'
+      print('Creating config')
       config.put()
     else:
-      print 'Skip creating config (dry-run mode)'
+      print('Skip creating config (dry-run mode)')
 
 
 def setup_fuzzers(non_dry_run):
   """Set up fuzzers."""
   for fuzzer_defaults in [AflDefaults(), LibFuzzerDefaults()]:
     fuzzer = data_types.Fuzzer.query(
-        data_types.Fuzzer.name == fuzzer_defaults.name)
-    if fuzzer.get():
-      print fuzzer_defaults.name, 'fuzzer already exists'
+        data_types.Fuzzer.name == fuzzer_defaults.name).get()
+    if fuzzer:
+      print(fuzzer_defaults.name, 'fuzzer already exists')
+      if non_dry_run:
+        print('Updating stats metrics.')
+        fuzzer.stats_columns = fuzzer_defaults.stats_columns
+        fuzzer.stats_column_descriptions = (
+            fuzzer_defaults.stats_column_descriptions)
+        fuzzer.put()
+
       continue
 
-    fuzzer = fuzzer_defaults.create_fuzzer()
-
     if non_dry_run:
-      print 'Creating fuzzer', fuzzer_defaults.name
-      fuzzer.put()
+      print('Creating fuzzer', fuzzer_defaults.name)
+      fuzzer_defaults.create_fuzzer().put()
     else:
-      print 'Skip creating fuzzer', fuzzer_defaults.name, '(dry-run mode)'
+      print('Skip creating fuzzer', fuzzer_defaults.name, '(dry-run mode)')
 
 
 def setup_templates(non_dry_run):
   """Set up templates."""
-  for name, template in TEMPLATES.iteritems():
-    existing = data_types.JobTemplate.query(
+  for name, template in six.iteritems(TEMPLATES):
+    job = data_types.JobTemplate.query(
         data_types.JobTemplate.name == name).get()
-    if existing:
-      print 'Template with name', name, 'already exists.'
+    if job:
+      print('Template with name', name, 'already exists.')
       continue
 
     if non_dry_run:
-      print 'Creating template', name
+      print('Creating template', name)
       data_types.JobTemplate(name=name, environment_string=template).put()
     else:
-      print 'Skip creating template', name, '(dry-run mode)'
+      print('Skip creating template', name, '(dry-run mode)')
 
 
 def setup_metrics(non_dry_run):
@@ -257,10 +266,10 @@ def setup_metrics(non_dry_run):
     metric.monitoring_v3_metric_descriptor(descriptor)
 
     if non_dry_run:
-      print 'Creating metric', descriptor
+      print('Creating metric', descriptor)
       client.create_metric_descriptor(project_path, descriptor)
     else:
-      print 'Skip creating metric', descriptor, '(dry-run mode)'
+      print('Skip creating metric', descriptor, '(dry-run mode)')
 
 
 def execute(args):
@@ -272,4 +281,4 @@ def execute(args):
   if not args.local:
     setup_metrics(args.non_dry_run)
 
-  print 'Done'
+  print('Done')

@@ -13,7 +13,10 @@
 # limitations under the License.
 """Load project data."""
 
+from builtins import object
+from past.builtins import basestring
 import os
+import six
 
 from collections import namedtuple
 
@@ -54,11 +57,15 @@ HostWorkerAssignment = namedtuple('HostWorkerAssignment',
 
 
 def _process_instance_template(instance_template):
-  """Process instance template."""
-  # Load file metadata
+  """Process instance template, normalizing some of metadata key values."""
+  # Load metadata items for a particular instance template.
   items = instance_template['properties']['metadata']['items']
   for item in items:
-    if item['value'].startswith(FILE_SCHEME):
+    # If the item value is a relative file path specified using the file://
+    # scheme, then subsitute it with the actual file content. This is needed
+    # since compute engine instance manager cannot read files from our repo.
+    if (isinstance(item['value'], basestring) and
+        item['value'].startswith(FILE_SCHEME)):
       file_path = item['value'][len(FILE_SCHEME):]
       with open(
           os.path.join(environment.get_gce_config_directory(), file_path)) as f:
@@ -69,7 +76,7 @@ def _config_to_project(name, config):
   """Read a project config."""
   clusters = []
 
-  for cluster_name, zone in config['clusters'].iteritems():
+  for cluster_name, zone in six.iteritems(config['clusters']):
     clusters.append(
         Cluster(
             name=cluster_name,
@@ -101,7 +108,7 @@ def _project_configs():
 
 def get_projects():
   projects = []
-  for name, project in _project_configs().iteritems():
+  for name, project in six.iteritems(_project_configs()):
     projects.append(_config_to_project(name, project))
 
   return projects

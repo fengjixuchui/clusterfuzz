@@ -1,4 +1,4 @@
-// Copyright 2018 Google LLC
+// Copyright 2019 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ func TestMain(m *testing.M) {
 	os.Setenv("GOOGLE_CLOUD_PROJECT", os.Getenv("DATASTORE_PROJECT_ID"))
 	db.Init()
 
-	buckets.RegisterProvider(gcs.Scheme, gcs.New())
+	buckets.RegisterProvider(gcs.Scheme, gcs.NewForTesting())
 
 	result := m.Run()
 	emulators.Cleanup(emulator)

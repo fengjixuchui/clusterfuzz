@@ -13,6 +13,8 @@
 # limitations under the License.
 """Minimize task for handling testcase minimization."""
 
+from builtins import object
+from builtins import range
 import binascii
 import functools
 import os
@@ -38,7 +40,7 @@ from crash_analysis.crash_comparer import CrashComparer
 from crash_analysis.crash_result import CrashResult
 from datastore import data_handler
 from datastore import data_types
-from fuzzing import tests
+from fuzzing import testcase_manager
 from google_cloud_utils import blobs
 from metrics import logs
 from platforms import android
@@ -263,7 +265,8 @@ class TestRunner(object):
     profile_index = self._get_profile_index()
 
     if use_fresh_profile and environment.get_value('USER_PROFILE_ARG'):
-      shell.remove_directory(tests.get_user_profile_directory(profile_index))
+      shell.remove_directory(
+          testcase_manager.get_user_profile_directory(profile_index))
 
     # For Android, we need to sync our local testcases directory with the one on
     # the device.
@@ -278,7 +281,7 @@ class TestRunner(object):
     arguments_changed = arguments != self._previous_arguments
     self._previous_arguments = arguments
 
-    command = tests.get_command_line_for_application(
+    command = testcase_manager.get_command_line_for_application(
         file_to_run=file_path,
         app_args=arguments,
         needs_http=needs_http,
@@ -318,7 +321,7 @@ class TestRunner(object):
 
     run_queue = minimizer.TestQueue(
         instances, per_thread_cleanup_function=cleanup_function)
-    for _ in xrange(runs):
+    for _ in range(runs):
       run_queue.push(self.file_path, self.run, self.store_result_from_run)
 
     run_queue.process()
@@ -416,8 +419,10 @@ def execute_task(testcase_id, job_type):
 
   # If the warmup crash occurred but we couldn't reproduce this in with
   # multiple processes running in parallel, try to minimize single threaded.
-  if (len(crash_times) < tests.REPRODUCIBILITY_FACTOR * crash_retries and
-      warmup_crash_occurred and max_threads > 1):
+  reproducible_crash_count = (
+      testcase_manager.REPRODUCIBILITY_FACTOR * crash_retries)
+  if (len(crash_times) < reproducible_crash_count and warmup_crash_occurred and
+      max_threads > 1):
     logs.log('Attempting to continue single-threaded.')
 
     max_threads = 1
@@ -428,30 +433,32 @@ def execute_task(testcase_id, job_type):
     saved_unsymbolized_crash_state, flaky_stack, crash_times = (
         check_for_initial_crash(test_runner, crash_retries, testcase))
 
+  if not crash_times:
+    # We didn't crash at all. This might be a legitimately unreproducible
+    # test case, so it will get marked as such after being retried on other
+    # bots.
+    testcase = data_handler.get_testcase_by_id(testcase_id)
+    data_handler.update_testcase_comment(testcase, data_types.TaskState.ERROR,
+                                         'Unable to reproduce crash')
+    task_creation.mark_unreproducible_if_flaky(testcase, True)
+    return
+
   if flaky_stack:
     testcase.flaky_stack = flaky_stack
     testcase.put()
 
-  if len(crash_times) < tests.REPRODUCIBILITY_FACTOR * crash_retries:
-    if not crash_times:
-      # We didn't crash at all, so try again. This might be a legitimately
-      # unreproducible test case, so it will get marked as such after being
-      # retried on other bots.
-      testcase = data_handler.get_testcase_by_id(testcase_id)
-      data_handler.update_testcase_comment(testcase, data_types.TaskState.ERROR,
-                                           'Unable to reproduce crash')
-      task_creation.mark_unreproducible_if_flaky(testcase, True)
-    else:
-      # We reproduced this crash at least once. It's too flaky to minimize, but
-      # maybe we'll have more luck in the other jobs.
-      testcase = data_handler.get_testcase_by_id(testcase_id)
-      testcase.minimized_keys = 'NA'
-      error_message = (
-          'Unable to reproduce crash reliably, skipping '
-          'minimization (crashed %d/%d)' % (len(crash_times), crash_retries))
-      data_handler.update_testcase_comment(testcase, data_types.TaskState.ERROR,
-                                           error_message)
-      create_additional_tasks(testcase)
+  is_redo = testcase.get_metadata('redo_minimize')
+  if not is_redo and len(crash_times) < reproducible_crash_count:
+    # We reproduced this crash at least once. It's too flaky to minimize, but
+    # maybe we'll have more luck in the other jobs.
+    testcase = data_handler.get_testcase_by_id(testcase_id)
+    testcase.minimized_keys = 'NA'
+    error_message = (
+        'Crash occurs, but not too consistently. Skipping minimization '
+        '(crashed %d/%d)' % (len(crash_times), crash_retries))
+    data_handler.update_testcase_comment(testcase, data_types.TaskState.ERROR,
+                                         error_message)
+    create_additional_tasks(testcase)
     return
 
   # If we've made it this far, the test case appears to be reproducible. Clear
@@ -543,37 +550,30 @@ def execute_task(testcase_id, job_type):
         testcase_file_path):
       return
 
-  command = tests.get_command_line_for_application(
+  command = testcase_manager.get_command_line_for_application(
       testcase_file_path, app_args=app_arguments, needs_http=testcase.http_flag)
   last_crash_result = test_runner.last_failing_result
-  video_key = create_video(testcase, test_timeout, testcase_file_path,
-                           app_arguments)
 
   store_minimized_testcase(testcase, input_directory, file_list, data,
                            testcase_file_path)
   finalize_testcase(
-      testcase_id,
-      command,
-      last_crash_result,
-      flaky_stack=flaky_stack,
-      video_key=video_key)
+      testcase_id, command, last_crash_result, flaky_stack=flaky_stack)
 
 
 def finalize_testcase(testcase_id,
                       command,
                       last_crash_result,
-                      flaky_stack=False,
-                      video_key=None):
+                      flaky_stack=False):
   """Perform final updates on a test case and prepare it for other tasks."""
   # Symbolize crash output if we have it.
   testcase = data_handler.get_testcase_by_id(testcase_id)
   if last_crash_result:
     _update_crash_result(testcase, last_crash_result, command)
 
+  testcase.delete_metadata('redo_minimize', update_testcase=False)
+
   # Update remaining test case information.
   testcase.flaky_stack = flaky_stack
-  if video_key:
-    testcase.video = video_key
   if build_manager.is_custom_binary():
     testcase.set_impacts_as_na()
     testcase.regression = 'NA'
@@ -808,63 +808,6 @@ def check_deadline_exceeded_and_store_partial_minimized_testcase(
   return deadline_exceeded
 
 
-def create_video(testcase, test_timeout, testcase_file_path,
-                 reduced_arg_string):
-  """Create a video to record test case execution with interaction gestures."""
-  if not testcase.gestures:
-    return ''
-
-  # FIXME(mbarbella): Support additional platforms.
-  if environment.platform() != 'LINUX':
-    return ''
-
-  # The --disable-gl-drawing-for-tests is sometimes passed for performance
-  # reasons, but should not be used if we are going to render a video.
-  disable_gl_drawing_flag = '--disable-gl-drawing-for-tests'
-  if disable_gl_drawing_flag in reduced_arg_string:
-    reduced_arg_string = reduced_arg_string.replace(disable_gl_drawing_flag, '')
-
-  additional_timeout = 12
-  temp_directory = environment.get_value('BOT_TMPDIR')
-  video_file = os.path.join(temp_directory,
-                            'testcase_%s.avi' % testcase.key.id())
-  video_timeout = test_timeout + additional_timeout
-  ffmpeg_cmd = (
-      '/usr/bin/avconv -f x11grab -s 1280x1024 -r 60 -b 5000k -g 300 -i :1'
-      ' -y -t %d -vcodec mpeg4 -vb 20M -vf "setpts=15.0*PTS" %s' %
-      (video_timeout, video_file))
-
-  thread = process_handler.get_process()(
-      target=process_handler.run_process,
-      args=(ffmpeg_cmd, None, video_timeout))
-
-  try:
-    thread.start()
-    time.sleep(additional_timeout / 2)
-  except MemoryError:
-    logs.log_error('Error in creating video for the interaction gesture.')
-    return ''
-
-  command = tests.get_command_line_for_application(
-      testcase_file_path,
-      app_args=reduced_arg_string,
-      needs_http=testcase.http_flag)
-  process_handler.run_process(
-      command, timeout=test_timeout, gestures=testcase.gestures)
-  thread.join(video_timeout)
-
-  if not os.path.exists(video_file) or not os.path.getsize(video_file):
-    return ''
-
-  logs.log('Storing video file for interaction gesture.')
-  file_handle = open(video_file, 'rb')
-  video_key = blobs.write_blob(file_handle)
-  file_handle.close()
-  shell.remove_file(video_file)
-
-  return video_key
-
-
 def check_for_initial_crash(test_runner, crash_retries, testcase):
   """Initial check to see how long it takes to reproduce a crash."""
   crash_times = []
@@ -1018,7 +961,7 @@ def can_minimize_file(file_path):
     return True
 
   # Attempt to minimize IPC dumps.
-  if file_path.endswith(tests.IPCDUMP_EXTENSION):
+  if file_path.endswith(testcase_manager.IPCDUMP_EXTENSION):
     return supports_ipc_minimization(file_path)
 
   # Other binary file formats are not supported.
@@ -1047,7 +990,7 @@ def do_ipc_dump_minimization(test_function, get_temp_file, file_path, deadline,
     except ValueError:
       return []
 
-    return range(last_index + 1)
+    return list(range(last_index + 1))
 
   def combine_tokens(tokens):
     """Use the ipc_message_util utility to create a file for these tokens."""
@@ -1133,7 +1076,7 @@ def _run_libfuzzer_testcase(testcase, testcase_file_path):
 
   test_timeout = environment.get_value('TEST_TIMEOUT',
                                        process_handler.DEFAULT_TEST_TIMEOUT)
-  repro_command = tests.get_command_line_for_application(
+  repro_command = testcase_manager.get_command_line_for_application(
       file_to_run=testcase_file_path, needs_http=testcase.http_flag)
   return_code, crash_time, output = process_handler.run_process(
       repro_command, timeout=test_timeout)
@@ -1183,7 +1126,7 @@ def _run_libfuzzer_tool(tool_name,
                     tool_name=tool_name,
                     output_file_path=rebased_output_file_path,
                     timeout=timeout)
-  command = tests.get_command_line_for_application(
+  command = testcase_manager.get_command_line_for_application(
       file_to_run=testcase_file_path,
       app_args=arguments,
       needs_http=testcase.http_flag)
@@ -1266,7 +1209,7 @@ def do_libfuzzer_minimization(testcase, testcase_file_path):
     # Be more lenient with marking testcases as unreproducible when this is a
     # job override.
     if is_overriden_job:
-      _skip_minimization(testcase, 'Unreproducible on overridden job.')
+      _skip_minimization(testcase, 'Unreproducible on overridden job')
     else:
       task_creation.mark_unreproducible_if_flaky(testcase, True)
 
@@ -1295,7 +1238,7 @@ def do_libfuzzer_minimization(testcase, testcase_file_path):
 
   # We attempt minimization multiple times in case one round results in an
   # incorrect state, or runs into another issue such as a slow unit.
-  for round_number in xrange(1, rounds + 1):
+  for round_number in range(1, rounds + 1):
     logs.log('Minimizing round %d.' % round_number)
     output_file_path, crash_result = _run_libfuzzer_tool(
         'minimize',
@@ -1309,11 +1252,11 @@ def do_libfuzzer_minimization(testcase, testcase_file_path):
       current_testcase_path = output_file_path
 
   if not last_crash_result:
-    repro_command = tests.get_command_line_for_application(
+    repro_command = testcase_manager.get_command_line_for_application(
         file_to_run=testcase_file_path, needs_http=testcase.http_flag)
     _skip_minimization(
         testcase,
-        'LibFuzzer minimization failed.',
+        'LibFuzzer minimization failed',
         crash_result=initial_crash_result,
         command=repro_command)
     return
@@ -1328,7 +1271,7 @@ def do_libfuzzer_minimization(testcase, testcase_file_path):
       current_testcase_path = cleansed_testcase_path
 
   # Finalize the test case if we were able to reproduce it.
-  repro_command = tests.get_command_line_for_application(
+  repro_command = testcase_manager.get_command_line_for_application(
       file_to_run=current_testcase_path, needs_http=testcase.http_flag)
   finalize_testcase(testcase.key.id(), repro_command, last_crash_result)
 
@@ -1388,7 +1331,7 @@ def minimize_file(file_path,
                   delete_temp_files=True):
   """Attempt to minimize a single file."""
   # Specialized minimization strategy for IPC dumps.
-  if file_path.endswith(tests.IPCDUMP_EXTENSION):
+  if file_path.endswith(testcase_manager.IPCDUMP_EXTENSION):
     return do_ipc_dump_minimization(test_function, get_temp_file, file_path,
                                     deadline, threads, delete_temp_files,
                                     cleanup_interval)

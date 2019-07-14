@@ -13,6 +13,8 @@
 # limitations under the License.
 """Test helpers for untrusted_runner."""
 
+from future import standard_library
+standard_library.install_aliases()
 import os
 import shutil
 import subprocess
@@ -59,8 +61,7 @@ def _create_test_bot():
   env['UNTRUSTED_WORKER'] = 'True'
   env['BOT_NAME'] = 'localhost'
   bot_proc = subprocess.Popen(
-      ['python', 'butler.py', 'run_bot', '--skip-install-deps', bot_path],
-      env=env)
+      ['python', 'butler.py', 'run_bot', bot_path], env=env)
 
   return bot_proc, os.path.join(bot_path, 'clusterfuzz')
 

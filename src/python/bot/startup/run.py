@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Start the bot and heartbeat scripts."""
+from __future__ import print_function
 
 # Before any other imports, we must fix the path. Some libraries might expect
 # to be able to import dependencies directly, but we must store these in
@@ -19,6 +20,7 @@
 from python.base import modules
 modules.fix_module_search_paths()
 
+import atexit
 import os
 import time
 
@@ -142,6 +144,8 @@ def update_source_code_if_needed():
 
 def run_loop(bot_command, heartbeat_command):
   """Run infinite loop with bot's command."""
+  atexit.register(stop_heartbeat)
+
   while True:
     update_source_code_if_needed()
     start_heartbeat(heartbeat_command)
@@ -156,15 +160,13 @@ def run_loop(bot_command, heartbeat_command):
 
     sleep(LOOP_SLEEP_INTERVAL)
 
-  stop_heartbeat()
-
 
 def main():
   root_directory = environment.get_value('ROOT_DIR')
   if not root_directory:
     print('Please set ROOT_DIR environment variable to the root of the source '
           'checkout before running. Exiting.')
-    print 'For an example, check init.bash in the local directory.'
+    print('For an example, check init.bash in the local directory.')
     return
 
   environment.set_bot_environment()
@@ -177,12 +179,13 @@ def main():
   bot_log = os.path.join(log_directory, 'bot.log')
 
   bot_script_path = os.path.join(base_directory, BOT_SCRIPT)
-  bot_interpreter = shell.get_interpreter_for_command(bot_script_path)
+  bot_interpreter = shell.get_interpreter(bot_script_path)
+  assert bot_interpreter
   bot_command = '%s %s' % (bot_interpreter, bot_script_path)
 
   heartbeat_script_path = os.path.join(base_directory, HEARTBEAT_SCRIPT)
-  heartbeat_interpreter = shell.get_interpreter_for_command(
-      heartbeat_script_path)
+  heartbeat_interpreter = shell.get_interpreter(heartbeat_script_path)
+  assert heartbeat_interpreter
   heartbeat_command = '%s %s %s' % (heartbeat_interpreter,
                                     heartbeat_script_path, bot_log)
 

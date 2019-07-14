@@ -13,6 +13,8 @@
 # limitations under the License.
 """Fuzzing mutators."""
 
+from builtins import object
+from builtins import range
 import random
 import struct
 
@@ -83,8 +85,8 @@ class BitFlipper(MutatorPrimitive):
 
     while bits_flipped < int(ratio * len(buf)):
       n = random.randint(0, num_bits - 1)
-      for i in xrange(n, min(num_bits, n + self.contiguous_flips)):
-        buf[i / 8] ^= (1 << (i % 8))
+      for i in range(n, min(num_bits, n + self.contiguous_flips)):
+        buf[i // 8] ^= (1 << (i % 8))
         bits_flipped += 1
 
 
@@ -107,7 +109,7 @@ class BinaryValueAdder(MutatorPrimitive):
 
   def mutate(self, buf):
     """Mutator function."""
-    num_choices = len(buf) / self.num_bytes
+    num_choices = len(buf) // self.num_bytes
     changed = 0
     ratio = self.mutate_ratio()
 
@@ -133,7 +135,7 @@ class ByteRemover(MutatorPrimitive):
 
   def mutate(self, buf):
     """Mutator function."""
-    num_choices = len(buf) / self.num_bytes
+    num_choices = len(buf) // self.num_bytes
     changed = 0
     ratio = self.mutate_ratio()
 
@@ -203,15 +205,15 @@ class SpecialIntReplacer(MutatorPrimitive):
 
   def mutate(self, buf):
     """Mutator function."""
-    num_choices = len(buf) / self.num_bytes
+    num_choices = len(buf) // self.num_bytes
     changed = 0
 
     # Unsigned representations of signed values
-    signed_minimum = 1L << (8 * self.num_bytes - 1)
+    signed_minimum = 1 << (8 * self.num_bytes - 1)
     signed_maximum = signed_minimum - 1
 
     # For calculation of values closed to signed minimum/maximum
-    max_diff = 1L << (4 * self.num_bytes)
+    max_diff = 1 << (4 * self.num_bytes)
 
     special_ints = [
         struct.pack(self.pack_fmt, 0),
@@ -226,7 +228,7 @@ class SpecialIntReplacer(MutatorPrimitive):
         struct.pack(self.pack_fmt,
                     signed_maximum - random.randint(1, max_diff)),
         # -1 or unsigned maximum
-        struct.pack(self.pack_fmt, (1L << (8 * self.num_bytes)) - 1)
+        struct.pack(self.pack_fmt, (1 << (8 * self.num_bytes)) - 1)
     ]
 
     ratio = self.mutate_ratio()
@@ -251,7 +253,7 @@ class SignFlipper(MutatorPrimitive):
 
   def mutate(self, buf):
     """Mutator function."""
-    num_choices = len(buf) / self.num_bytes
+    num_choices = len(buf) // self.num_bytes
     changed = 0
 
     ratio = self.mutate_ratio()
@@ -279,10 +281,10 @@ class Truncator(MutatorPrimitive):
 class CombinedMutator(object):
   """Combination of mutator primitives."""
 
-  def __init__(self,
-               mutators=None,
-               num_mutations_choices=range(DEFAULT_MIN_MUTATIONS,
-                                           DEFAULT_MAX_MUTATIONS + 1)):
+  def __init__(self, mutators=None, num_mutations_choices=None):
+    if num_mutations_choices is None:
+      num_mutations_choices = list(
+          range(DEFAULT_MIN_MUTATIONS, DEFAULT_MAX_MUTATIONS + 1))
     self.mutators = []
     if mutators is not None:
       for mutator in mutators:
@@ -296,7 +298,7 @@ class CombinedMutator(object):
   def mutate(self, buf):
     """Mutator function."""
     num_mutations = random.sample(self.num_mutations_choices, 1)[0]
-    for _ in xrange(num_mutations):
+    for _ in range(num_mutations):
       mutator = self.choose_mutator()
       mutator.mutate(buf)
 

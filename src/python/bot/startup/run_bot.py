@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Bot startup script."""
+from __future__ import print_function
 
 # We want to use utf-8 encoding everywhere throughout the application
 # instead of the default 'ascii' encoding. This must happen before any
@@ -31,6 +32,9 @@ path_patcher.patch()
 from python.base import modules
 modules.fix_module_search_paths()
 
+from future import standard_library
+standard_library.install_aliases()
+from builtins import object
 import os
 import time
 import traceback
@@ -46,6 +50,7 @@ from datastore import data_handler
 from metrics import logs
 from metrics import monitor
 from metrics import monitoring_metrics
+from metrics import profiler
 from system import environment
 
 
@@ -65,14 +70,7 @@ class _Monitor(object):
     self.start_time = self.time_module.time()
 
   def __exit__(self, exc_type, value, trackback):
-    duration = self.time_module.time() - self.start_time
-    has_error = bool(value)
-    monitoring_metrics.TASK_TIME.add(
-        duration, {
-            'task': self.task.command or '',
-            'job': self.task.job or '',
-            'error': has_error
-        })
+    pass
 
 
 def task_loop():
@@ -125,12 +123,15 @@ def main():
   if not root_directory:
     print('Please set ROOT_DIR environment variable to the root of the source '
           'checkout before running. Exiting.')
-    print 'For an example, check init.bash in the local directory.'
+    print('For an example, check init.bash in the local directory.')
     return
 
   dates.initialize_timezone_from_environment()
   environment.set_bot_environment()
   monitor.initialize()
+
+  if not profiler.start_if_needed('python_profiler_bot'):
+    sys.exit(-1)
 
   if environment.is_trusted_host(ensure_connected=False):
     from bot.untrusted_runner import host
@@ -151,10 +152,10 @@ def main():
 
     # Print the error trace to the console.
     if not clean_exit:
-      print 'Exception occurred while running "%s".' % task_payload
-      print '-' * 80
-      print error_stacktrace
-      print '-' * 80
+      print('Exception occurred while running "%s".' % task_payload)
+      print('-' * 80)
+      print(error_stacktrace)
+      print('-' * 80)
 
     should_terminate = (
         clean_exit or errors.error_in_list(error_stacktrace,

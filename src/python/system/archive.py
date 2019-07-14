@@ -13,6 +13,7 @@
 # limitations under the License.
 """Functions for handling archives."""
 
+from builtins import object
 import os
 import tarfile
 import zipfile
@@ -218,12 +219,8 @@ def unpack(archive_path,
   # traversals.
   if not trusted:
     for filename in file_list:
-      absolute_file_path = os.path.join(output_directory, filename).encode(
-          'ascii', 'ignore')
-      if os.path.altsep:
-        absolute_file_path = absolute_file_path.replace(os.path.altsep,
-                                                        os.path.sep)
-      absolute_file_path = absolute_file_path.rstrip(os.path.sep)
+      absolute_file_path = os.path.join(output_directory,
+                                        os.path.normpath(filename))
       real_file_path = os.path.realpath(absolute_file_path)
 
       if real_file_path == output_directory:
@@ -255,16 +252,16 @@ def unpack(archive_path,
         # reasons.
         external_attr = zip_archive.getinfo(filename).external_attr >> 16
         if oct(external_attr).startswith(FILE_ATTRIBUTE):
-          old_mode = external_attr & 07777
-          new_mode = external_attr & 0777
-          new_mode |= 0440
-          needs_execute_permission = external_attr & 0100
+          old_mode = external_attr & 0o7777
+          new_mode = external_attr & 0o777
+          new_mode |= 0o440
+          needs_execute_permission = external_attr & 100
 
           if new_mode != old_mode or needs_execute_permission:
             # Default extract condition is 640 which is safe.
             # |new_mode| might have read+write+execute bit for
             # others, so remove those.
-            new_mode &= 0770
+            new_mode &= 0o770
 
             os.chmod(extracted_path, new_mode)
 
@@ -311,7 +308,9 @@ def unpack(archive_path,
       tar_archive.extractall(path=output_directory)
     except:
       # In case of errors, we try to extract whatever we can without errors.
-      error_occurred = True
+      logs.log_error(
+          'Failed to extract everything from archive %s, trying one at a time.'
+          % archive_filename)
       for filename in file_list:
         try:
           tar_archive.extract(filename, output_directory)
@@ -327,10 +326,6 @@ def unpack(archive_path,
     tar_archive.close()
     if archive_type == ArchiveType.TAR_LZMA:
       lzma_file.close()
-
-    if error_occurred:
-      logs.log_error(
-          'Failed to extract everything from archive %s.' % archive_filename)
 
   else:
     logs.log_error(

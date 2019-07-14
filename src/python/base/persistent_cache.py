@@ -34,8 +34,7 @@ def initialize():
   if os.path.exists(cache_directory_path):
     clear_values()
   else:
-    shell.create_directory_if_needed(
-        cache_directory_path, create_intermediates=True)
+    shell.create_directory(cache_directory_path, create_intermediates=True)
 
 
 def clear_values():
@@ -71,7 +70,7 @@ def get_value(key, default_value=None, constructor=None):
     return default_value
 
   try:
-    with open(value_path) as f:
+    with open(value_path, 'rb') as f:
       value_str = f.read()
   except IOError:
     logs.log_error('Failed to read %s from persistent cache.' % key)
@@ -121,7 +120,7 @@ def set_value(key, value, persist_across_reboots=False):
     return
 
   try:
-    with open(value_path, 'w') as f:
+    with open(value_path, 'wb') as f:
       f.write(value_str)
   except IOError:
     logs.log_error('Failed to write %s to persistent cache.' % key)
@@ -134,7 +133,7 @@ def set_value(key, value, persist_across_reboots=False):
     return
 
   try:
-    open(persist_value_path, 'w').close()
+    open(persist_value_path, 'wb').close()
   except IOError:
     logs.log_error(
         'Failed to write presistent metadata file for cache key %s' % key)

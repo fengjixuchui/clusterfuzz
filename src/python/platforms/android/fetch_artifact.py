@@ -14,12 +14,15 @@
 """Fetch a build artifact (ported from google3 with
 minor modifications, especially without any google3 specific library
 dependencies)."""
+from __future__ import division
 
+from builtins import range
+from future import standard_library
+standard_library.install_aliases()
 import apiclient
 import io
 import os
 import re
-import StringIO
 
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -36,7 +39,7 @@ MAX_RETRIES = 20
 def execute_request_with_retries(request):
   """Executes request and retries on failure."""
   result = None
-  for _ in xrange(MAX_RETRIES):
+  for _ in range(MAX_RETRIES):
     try:
       result = request.execute()
       break
@@ -84,7 +87,7 @@ def download_artifact(client, bid, target, attempt_id, name, output_directory):
       status, done = downloader.next_chunk()
       if status:
         size_completed = int(status.resumable_progress)
-        percent_completed = size_completed * 100.0 / size
+        percent_completed = (size_completed * 100.0) / size
         logs.log('%.1f%% complete.' % percent_completed)
 
   return output_path
@@ -115,9 +118,15 @@ def get_client():
       'build_apiary_service_account_email')
   build_apiary_service_account_private_key = db_config.get_value(
       'build_apiary_service_account_private_key')
+  if (not build_apiary_service_account_email or
+      not build_apiary_service_account_private_key):
+    logs.log(
+        'Android build apiary credentials are not set, skip artifact fetch.')
+    return None
+
   credentials = ServiceAccountCredentials.from_p12_keyfile_buffer(
       build_apiary_service_account_email,
-      StringIO.StringIO(build_apiary_service_account_private_key),
+      io.BytesIO(build_apiary_service_account_private_key),
       scopes='https://www.googleapis.com/auth/androidbuild.internal')
   client = apiclient.discovery.build(
       'androidbuildinternal',
@@ -131,6 +140,9 @@ def get_client():
 def get_latest_artifact_info(branch, target, signed=False):
   """Return latest artifact for a branch and target."""
   client = get_client()
+  if not client:
+    return None
+
   request = client.build().list(
       buildType='submitted',
       branch=branch,
@@ -141,8 +153,8 @@ def get_latest_artifact_info(branch, target, signed=False):
   builds = execute_request_with_retries(request)
   if not builds:
     logs.log_error(
-        'No artifact found for target %s and branch %s.' % (target, branch))
-    return {}
+        'No artifact found for target %s, branch %s.' % (target, branch))
+    return None
 
   build = builds['builds'][0]
   bid = build['buildId']
@@ -153,6 +165,8 @@ def get_latest_artifact_info(branch, target, signed=False):
 def get(bid, target, regex, output_directory):
   """Return artifact for a given build id, target and file regex."""
   client = get_client()
+  if not client:
+    return None
 
   # Run the script to fetch the artifact.
   return run_script(
@@ -163,13 +177,13 @@ def get(bid, target, regex, output_directory):
       output_directory=output_directory)
 
 
-def run_script(client, bid, target, regex=None, output_directory=None):
+def run_script(client, bid, target, regex, output_directory):
   """Download artifacts as specified."""
   artifacts = get_artifacts_for_build(
       client=client, bid=bid, target=target, attempt_id='latest')
   if not artifacts:
     logs.log_error(
-        'No artifact found for target %s with build id %s.' % (target, bid))
+        'No artifact found for target %s, build id %s.' % (target, bid))
     return False
 
   regex = re.compile(regex)

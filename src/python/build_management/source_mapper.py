@@ -13,6 +13,7 @@
 # limitations under the License.
 """Helper functions for fetch source links."""
 
+from builtins import object
 import re
 
 from base import utils
@@ -56,10 +57,16 @@ class VCSViewer(object):
 
   def get_source_url_for_revision(self, revision):
     """Return source revision url given a url and revision."""
+    if not self.VCS_REVISION_SUB:
+      return None
+
     return self.get_mapped_url(self.VCS_REVISION_SUB, revision=revision)
 
   def get_source_url_for_revision_diff(self, start_revision, end_revision):
     """Return source revision diff url given a url and revision."""
+    if not self.VCS_REVISION_DIFF_SUB:
+      return None
+
     return self.get_mapped_url(
         self.VCS_REVISION_DIFF_SUB,
         start_revision=start_revision,
@@ -68,6 +75,9 @@ class VCSViewer(object):
 
   def get_source_url_for_revision_path_and_line(self, revision, path, line):
     """Return source revision url given a url, revision, path and line."""
+    if not self.VCS_REVISION_PATH_LINE_SUB:
+      return None
+
     return self.get_mapped_url(
         self.VCS_REVISION_PATH_LINE_SUB,
         revision=revision,
@@ -105,6 +115,13 @@ class GoogleSourceVCS(VCSViewer):
   VCS_REVISION_PATH_LINE_SUB = r'\1/+/{revision}/{path}#{line}'
 
 
+class GoogleVCS(VCSViewer):
+  VCS_URL_REGEX = re.compile(r'^//(.*)$')
+  VCS_REVISION_SUB = r'https://cs.corp.google.com/\1/?rcl={revision}'
+  VCS_REVISION_PATH_LINE_SUB = (
+      r'https://cs.corp.google.com/\1/{path}?rcl={revision}&l={line}')
+
+
 class MercurialVCS(VCSViewer):
   VCS_URL_REGEX = re.compile(r'(https?://hg\.(.*))')
   VCS_REVISION_SUB = r'\1/rev/{revision}'
@@ -113,7 +130,14 @@ class MercurialVCS(VCSViewer):
   VCS_REVISION_PATH_LINE_SUB = r'\1/file/{revision}/{path}#l{line}'
 
 
-VCS_LIST = [FreeDesktopVCS, MercurialVCS, GitHubVCS, GitLabVCS, GoogleSourceVCS]
+VCS_LIST = [
+    FreeDesktopVCS,
+    GitHubVCS,
+    GitLabVCS,
+    GoogleSourceVCS,
+    GoogleVCS,
+    MercurialVCS,
+]
 
 
 def get_component_source_and_relative_path(path, revisions_dict):
@@ -126,7 +150,7 @@ def get_component_source_and_relative_path(path, revisions_dict):
   if normalized_path is None:
     return ComponentPath()
 
-  component_sources = sorted(revisions_dict.keys(), key=len, reverse=True)
+  component_sources = sorted(list(revisions_dict.keys()), key=len, reverse=True)
   default_component_source = None
   for component_source in component_sources:
     # Trailing slash is important so that we match the exact component source.

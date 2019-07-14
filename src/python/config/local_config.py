@@ -13,7 +13,9 @@
 # limitations under the License.
 """Get values / settings from local configuration."""
 
+from builtins import object
 import os
+import six
 import yaml
 
 from base import errors
@@ -28,6 +30,7 @@ SEPARATOR = '.'
 GAE_AUTH_PATH = 'gae.auth'
 GAE_CONFIG_PATH = 'gae.config'
 GCE_CLUSTERS_PATH = 'gce.clusters'
+ISSUE_TRACKERS_PATH = 'issue_trackers.config'
 MONITORING_REGIONS_PATH = 'monitoring.regions'
 PROJECT_PATH = 'project'
 
@@ -141,11 +144,11 @@ class Config(object):
 
     # Check that config directory is valid.
     if not self._config_dir or not os.path.exists(self._config_dir):
-      raise errors.BadConfigError
+      raise errors.BadConfigError(self._config_dir)
 
     # Config roots should exist.
     if not _validate_root(self._config_dir, self._root):
-      raise errors.BadConfigError
+      raise errors.BadConfigError(self._config_dir)
 
   def sub_config(self, path):
     """Return a new config with a new sub-root."""
@@ -200,7 +203,7 @@ class ProjectConfig(Config):
     if not env_variable_values:
       return
 
-    for variable, value in env_variable_values.iteritems():
+    for variable, value in six.iteritems(env_variable_values):
       if variable in os.environ:
         # Don't override existing values.
         continue
@@ -227,3 +230,10 @@ class MonitoringRegionsConfig(Config):
 
   def __init__(self):
     super(MonitoringRegionsConfig, self).__init__(MONITORING_REGIONS_PATH)
+
+
+class IssueTrackerConfig(Config):
+  """Issue tracker config."""
+
+  def __init__(self):
+    super(IssueTrackerConfig, self).__init__(ISSUE_TRACKERS_PATH)

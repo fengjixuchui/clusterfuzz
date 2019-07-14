@@ -58,7 +58,7 @@ def is_fuzz_target_local(file_path, file_handle=None):
     return False
 
   # Use already provided file handle or open the file.
-  local_file_handle = file_handle or open(file_path)
+  local_file_handle = file_handle or open(file_path, 'rb')
 
   # TODO(metzman): Bound this call so we don't read forever if something went
   # wrong.
@@ -125,7 +125,7 @@ def get_temp_dir():
   temp_dirname = 'temp-' + str(os.getpid())
   temp_directory = os.path.join(
       environment.get_value('FUZZ_INPUTS_DISK'), temp_dirname)
-  shell.create_directory_if_needed(temp_directory)
+  shell.create_directory(temp_directory)
   return temp_directory
 
 

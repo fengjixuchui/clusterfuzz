@@ -13,11 +13,16 @@
 # limitations under the License.
 """Generic helper functions useful in tests."""
 
+from future import standard_library
+standard_library.install_aliases()
+from builtins import object
 import atexit
 import datetime
+import io
 import os
 import requests
 import shutil
+import six
 import socket
 import subprocess
 import tempfile
@@ -28,8 +33,6 @@ from config import local_config
 from datastore import data_types
 from datastore import ndb
 from google_cloud_utils import pubsub
-from issue_management.comment import Comment
-from issue_management.issue import Issue
 from system import environment
 from system import process_handler
 
@@ -54,6 +57,7 @@ def create_generic_testcase(created_days_ago=28):
   testcase.crash_type = 'fake type'
   testcase.comments = 'Fuzzer: test'
   testcase.fuzzed_keys = 'abcd'
+  testcase.minimized_keys = 'efgh'
   testcase.fuzzer_name = 'fuzzer1'
   testcase.open = True
   testcase.one_time_crasher_flag = False
@@ -65,66 +69,6 @@ def create_generic_testcase(created_days_ago=28):
   testcase.put()
 
   return testcase
-
-
-def create_generic_issue(created_days_ago=28):
-  """Returns a simple issue object for use in tests."""
-  issue = Issue()
-  issue.cc = ['cc@chromium.org']
-  issue.comment = ''
-  issue.comments = []
-  issue.components = ['Test>Component']
-  issue.labels = ['TestLabel', 'Pri-1', 'OS-Windows']
-  issue.open = True
-  issue.owner = 'owner@chromium.org'
-  issue.status = 'Assigned'
-  issue.id = 1
-  issue.itm = create_issue_tracker_manager()
-
-  # Test issue was created 1 week before the current (mocked) time.
-  issue.created = CURRENT_TIME - datetime.timedelta(days=created_days_ago)
-
-  return issue
-
-
-def create_generic_issue_comment(comment_body='Comment.',
-                                 author='user@chromium.org',
-                                 days_ago=21,
-                                 labels=None):
-  """Return a simple comment used for testing."""
-  comment = Comment()
-  comment.comment = comment_body
-  comment.author = author
-  comment.created = CURRENT_TIME - datetime.timedelta(days=days_ago)
-  comment.labels = labels
-
-  if comment.labels is None:
-    comment.labels = []
-
-  return comment
-
-
-def create_issue_tracker_manager():
-  """Create a fake issue tracker manager."""
-
-  class FakeIssueTrackerManager(object):
-    """Fake issue tracker manager."""
-
-    def get_issue(self, issue_id):
-      """Create a simple issue with the given id."""
-      issue = create_generic_issue()
-      issue.id = issue_id
-      return issue
-
-    def get_comments(self, issue):  # pylint: disable=unused-argument
-      """Return an empty comment list."""
-      return []
-
-    def save(self, issue, send_email=None):
-      """Fake wrapper on save function, does nothing."""
-      pass
-
-  return FakeIssueTrackerManager()
 
 
 def entities_equal(entity_1, entity_2, check_key=True):
@@ -173,6 +117,19 @@ def slow(func):
                              func)
 
 
+def android_device_required(func):
+  """Skip Android-specific tests if we cannot run them."""
+  reason = None
+  if not environment.get_value('ANDROID_SERIAL'):
+    reason = 'Android device tests require that ANDROID_SERIAL is set.'
+  elif not environment.get_value('INTEGRATION'):
+    reason = 'Integration tests are not enabled.'
+  elif environment.platform() != 'LINUX':
+    reason = 'Android device tests can only run on a Linux host.'
+
+  return unittest.skipIf(reason is not None, reason)(func)
+
+
 class EmulatorInstance(object):
   """Emulator instance."""
 
@@ -203,6 +160,41 @@ def _find_free_port():
   sock.close()
 
   return port
+
+
+def wait_for_emulator_ready(proc,
+                            emulator,
+                            indicator,
+                            timeout=EMULATOR_TIMEOUT,
+                            output_lines=None):
+  """Wait for emulator to be ready."""
+
+  def _read_thread(proc, ready_event):
+    """Thread to continuously read from the process stdout."""
+    ready = False
+    while True:
+      line = proc.stdout.readline()
+      if not line:
+        break
+
+      if output_lines is not None:
+        output_lines.append(line)
+
+      if not ready and indicator in line:
+        ready = True
+        ready_event.set()
+
+  # Wait for process to become ready.
+  ready_event = threading.Event()
+  thread = threading.Thread(target=_read_thread, args=(proc, ready_event))
+  thread.daemon = True
+  thread.start()
+
+  if not ready_event.wait(timeout):
+    raise RuntimeError(
+        '{} emulator did not get ready in time.'.format(emulator))
+
+  return thread
 
 
 def start_cloud_emulator(emulator, args=None, data_dir=None):
@@ -243,27 +235,7 @@ def start_cloud_emulator(emulator, args=None, data_dir=None):
   proc = subprocess.Popen(
       command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
-  def _read_thread(proc, ready_event):
-    """Thread to continuously read from the process stdout."""
-    ready = False
-    while True:
-      line = proc.stdout.readline()
-      if not line:
-        break
-
-      if not ready and ready_indicators[emulator] in line:
-        ready = True
-        ready_event.set()
-
-  # Wait for process to become ready.
-  ready_event = threading.Event()
-  thread = threading.Thread(target=_read_thread, args=(proc, ready_event))
-  thread.daemon = True
-  thread.start()
-
-  if not ready_event.wait(EMULATOR_TIMEOUT):
-    raise RuntimeError(
-        '{} emulator did not get ready in time.'.format(emulator))
+  thread = wait_for_emulator_ready(proc, emulator, ready_indicators[emulator])
 
   # Set env vars.
   env_vars = subprocess.check_output([
@@ -338,7 +310,7 @@ def with_cloud_emulators(*emulator_names):
         super(Wrapped, cls).setUpClass()
 
       def setUp(self):
-        for emulator in _emulators.itervalues():
+        for emulator in six.itervalues(_emulators):
           emulator.reset()
 
         super(Wrapped, self).setUp()
@@ -352,8 +324,11 @@ def with_cloud_emulators(*emulator_names):
 
 def set_up_pyfakefs(test_self):
   """Helper to set up Pyfakefs."""
+  real_cwd = os.path.realpath(os.getcwd())
+  config_dir = os.path.realpath(environment.get_config_directory())
   test_self.setUpPyfakefs()
-  test_self.fs.add_real_directory(environment.get_config_directory())
+  test_self.fs.add_real_directory(config_dir, lazy_read=False)
+  os.chdir(real_cwd)
 
 
 def supported_platforms(*platforms):
@@ -366,3 +341,14 @@ def supported_platforms(*platforms):
                                func)
 
   return decorator
+
+
+class MockStdout(io.BufferedWriter):
+  """Mock stdout."""
+
+  def __init__(self):
+    super(MockStdout, self).__init__(io.BytesIO())
+
+  def getvalue(self):
+    self.flush()
+    return self.raw.getvalue()

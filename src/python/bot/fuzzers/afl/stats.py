@@ -12,14 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Statistics for the afl launcher script."""
+from __future__ import print_function
 
+from builtins import object
 import os
 import re
-
-import strategies
+import six
 
 from bot.fuzzers import dictionary_manager
 from bot.fuzzers import engine_common
+from bot.fuzzers.afl import strategies
 from metrics import logs
 
 SANITIZER_START_REGEX = re.compile(r'.*ERROR: [A-z]+Sanitizer:.*')
@@ -116,7 +118,7 @@ class StatsGetter(object):
     try:
       afl_stat_value = self.afl_stats[afl_stat_name]
     except KeyError:
-      print "{0} not in AFL's stats file.".format(afl_stat_name)
+      print("{0} not in AFL's stats file.".format(afl_stat_name))
       # If afl_stat_value is in AFL_STATS_MAPPING, then get the clusterfuzz name
       # of the stat to lookup the stat's default value.
       clusterfuzz_stat_name = self.AFL_STATS_MAPPING.get(
@@ -192,12 +194,12 @@ class StatsGetter(object):
     # Read and parse stats from AFL's afl_stats. Then use them to set and
     # calculate our own stats.
     self.set_afl_stats()
-    for afl_stat, clusterfuzz_stat in self.AFL_STATS_MAPPING.iteritems():
+    for afl_stat, clusterfuzz_stat in six.iteritems(self.AFL_STATS_MAPPING):
       self.stats[clusterfuzz_stat] = self.get_afl_stat(afl_stat)
 
     try:
       self.stats['average_exec_per_sec'] = int(
-          self.get_afl_stat('execs_done') / actual_duration)
+          self.get_afl_stat('execs_done') // actual_duration)
 
     except ZeroDivisionError:  # Fail gracefully if actual_duration is 0.
       self.stats['average_exec_per_sec'] = 0

@@ -1,3 +1,4 @@
+from __future__ import print_function
 # Copyright 2019 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,18 +29,20 @@
 # Disable all pylint warnings/errors as this is based on external code.
 # pylint: disable-all
 
+from builtins import object
+from past.builtins import cmp
 import os
 import re
+import six
 import subprocess
 import sys
-import traceback
 
 from base import utils
 from google_cloud_utils import storage
 from metrics import logs
 from platforms.android import adb
-from platforms.android import device
 from platforms.android import fetch_artifact
+from platforms.android import settings
 from system import archive
 from system import environment
 from system import shell
@@ -97,10 +100,7 @@ def chrome_dsym_hints(binary):
      (e.g. Outer.app/Contents/Versions/1.2.3.4/Inner.app), and the debug info
      is in Inner.app.dSYM in the product dir.
   The first case is handled by llvm-symbolizer, so we only need to construct
-  .dSYM paths for .app bundles and frameworks.
-  We're assuming that there're no more than two nested bundles in the binary
-  path. Only one of these bundles may be a framework and frameworks cannot
-  contain other bundles."""
+  .dSYM paths for .app bundles and frameworks."""
   path_parts = binary.split(os.path.sep)
   app_positions = []
   framework_positions = []
@@ -111,18 +111,13 @@ def chrome_dsym_hints(binary):
       framework_positions.append(index)
 
   bundle_positions = app_positions + framework_positions
-  bundle_positions.sort()
-  assert len(bundle_positions) <= 2, \
-      'The path contains more than two nested bundles: %s' % binary
   if len(bundle_positions) == 0:
     # Case 1: this is a standalone executable or dylib.
     return []
-  assert (not (len(app_positions) == 1 and
-               len(framework_positions) == 1 and
-               app_positions[0] > framework_positions[0])), \
-      'The path contains an app bundle inside a framework: %s' % binary
+
   # Cases 2 and 3. The outermost bundle (which is the only bundle in the case 2)
   # is located in the product dir.
+  bundle_positions.sort()
   outermost_bundle = bundle_positions[0]
   product_dir = path_parts[:outermost_bundle]
   # In case 2 this is the same as |outermost_bundle|.
@@ -138,11 +133,14 @@ def chrome_dsym_hints(binary):
 
 def disable_buffering():
   """Make this process and child processes stdout unbuffered."""
-  if not os.environ.get('PYTHONUNBUFFERED'):
-    # Since sys.stdout is a C++ object, it's impossible to do
-    # sys.stdout.write = lambda...
+  os.environ['PYTHONUNBUFFERED'] = '1'
+
+  if not isinstance(sys.stdout, LineBuffered):
+    # Don't wrap sys.stdout if it is already wrapped.
+    # See https://github.com/google/clusterfuzz/issues/234 for why.
+    # Since sys.stdout is a C++ object, it's impossible to do sys.stdout.write =
+    # lambda...
     sys.stdout = LineBuffered(sys.stdout)
-    os.environ['PYTHONUNBUFFERED'] = 'x'
 
 
 def fix_filename(file_name):
@@ -185,6 +183,14 @@ def get_stack_frame(binary, addr, function_name, file_name):
 
   # Regular stack frame.
   return '%s in %s %s' % (addr, function_name, file_name)
+
+
+def is_valid_arch(s):
+  """Check if this is a valid supported architecture."""
+  return s in [
+      "i386", "x86_64", "x86_64h", "arm", "armv6", "armv7", "armv7s", "armv7k",
+      "arm64", "powerpc64", "powerpc64le", "s390x", "s390"
+  ]
 
 
 def guess_arch(address):
@@ -249,7 +255,7 @@ class LLVMSymbolizer(Symbolizer):
     # FIXME: Since we are not using process_handler.run_process here, we can run
     # into issues with unicode environment variable and values. Add this
     # explicit hack to convert these into strings.
-    env_copy = {str(key): str(value) for key, value in env_copy.iteritems()}
+    env_copy = {str(key): str(value) for key, value in six.iteritems(env_copy)}
 
     # Run the symbolizer.
     pipe = subprocess.Popen(
@@ -268,7 +274,7 @@ class LLVMSymbolizer(Symbolizer):
     result = []
     try:
       symbolizer_input = '"%s" %s' % (binary, offset)
-      print >> self.pipe.stdin, symbolizer_input
+      print(symbolizer_input, file=self.pipe.stdin)
       while True:
         function_name = self.pipe.stdout.readline().rstrip()
         if not function_name:
@@ -278,7 +284,8 @@ class LLVMSymbolizer(Symbolizer):
         result.append(get_stack_frame(binary, addr, function_name, file_name))
 
     except Exception:
-      logs.log_error('%s\n%s' % (symbolizer_input, traceback.format_exc(15)))
+      logs.log_error('Symbolization using llvm-symbolizer failed for: "%s".' %
+                     symbolizer_input)
       result = []
     if not result:
       result = None
@@ -312,12 +319,12 @@ class Addr2LineSymbolizer(Symbolizer):
 
     try:
       symbolizer_input = str(offset)
-      print >> self.pipe.stdin, symbolizer_input
+      print(symbolizer_input, file=self.pipe.stdin)
       function_name = self.pipe.stdout.readline().rstrip()
       file_name = self.pipe.stdout.readline().rstrip()
     except Exception:
-      logs.log_error(
-          '%s %s\n%s' % (binary, str(offset), traceback.format_exc(15)))
+      logs.log_error('Symbolization using addr2line failed for: "%s %s".' %
+                     (binary, str(offset)))
       function_name = ''
       file_name = ''
 
@@ -357,10 +364,10 @@ class UnbufferedLineConverter(object):
 
 class DarwinSymbolizer(Symbolizer):
 
-  def __init__(self, addr, binary):
+  def __init__(self, addr, binary, arch):
     super(DarwinSymbolizer, self).__init__()
     self.binary = binary
-    self.arch = guess_arch(addr)
+    self.arch = arch
     self.open_atos()
 
   def open_atos(self):
@@ -371,19 +378,25 @@ class DarwinSymbolizer(Symbolizer):
     """Overrides Symbolizer.symbolize."""
     if self.binary != binary:
       return None
-    atos_line = self.atos.convert('0x%x' % int(offset, 16))
-    while 'got symbolicator for' in atos_line:
-      atos_line = self.atos.readline()
-    # A well-formed atos response looks like this:
-    #   foo(type1, type2) (in object.name) (filename.cc:80)
-    match = re.match('^(.*) \(in (.*)\) \((.*:\d*)\)$', atos_line)
-    if match:
-      function_name = match.group(1)
-      function_name = re.sub('\(.*?\)', '', function_name)
-      file_name = match.group(3)
-      return [get_stack_frame(binary, addr, function_name, file_name)]
-    else:
-      return ['%s in %s' % (addr, atos_line)]
+
+    try:
+      atos_line = self.atos.convert('0x%x' % int(offset, 16))
+      while 'got symbolicator for' in atos_line:
+        atos_line = self.atos.readline()
+      # A well-formed atos response looks like this:
+      #   foo(type1, type2) (in object.name) (filename.cc:80)
+      match = re.match('^(.*) \(in (.*)\) \((.*:\d*)\)$', atos_line)
+      if match:
+        function_name = match.group(1)
+        function_name = re.sub('\(.*?\)', '', function_name)
+        file_name = match.group(3)
+        return [get_stack_frame(binary, addr, function_name, file_name)]
+      else:
+        return ['%s in %s' % (addr, atos_line)]
+    except Exception:
+      logs.log_error('Symbolization using atos failed for: "%s %s".' %
+                     (binary, str(offset)))
+      return ['{} ({}:{}+{})'.format(addr, binary, self.arch, offset)]
 
 
 # Chain several symbolizers so that if one symbolizer fails, we fall back
@@ -407,9 +420,9 @@ class ChainSymbolizer(Symbolizer):
     self.symbolizer_list.append(symbolizer)
 
 
-def SystemSymbolizerFactory(system, addr, binary):
+def SystemSymbolizerFactory(system, addr, binary, arch):
   if system == 'darwin':
-    return DarwinSymbolizer(addr, binary)
+    return DarwinSymbolizer(addr, binary, arch)
   elif system.startswith('linux'):
     return Addr2LineSymbolizer(binary)
 
@@ -426,7 +439,7 @@ class SymbolizationLoop(object):
     self.last_llvm_symbolizer = None
     self.dsym_hints = set([])
 
-  def symbolize_address(self, addr, binary, offset):
+  def symbolize_address(self, addr, binary, offset, arch):
     # On non-Darwin (i.e. on platforms without .dSYM debug info) always use
     # a single symbolizer binary.
     # On Darwin, if the dsym hint producer is present:
@@ -448,7 +461,7 @@ class SymbolizationLoop(object):
         self.llvm_symbolizers[binary] = self.last_llvm_symbolizer
       else:
         self.last_llvm_symbolizer = LLVMSymbolizerFactory(
-            self.system, guess_arch(addr), self.dsym_hints)
+            self.system, arch, self.dsym_hints)
         self.llvm_symbolizers[binary] = self.last_llvm_symbolizer
 
     # Use the chain of symbolizers:
@@ -460,7 +473,7 @@ class SymbolizationLoop(object):
     if result is None:
       # Initialize system symbolizer only if other symbolizers failed.
       symbolizers[binary].append_symbolizer(
-          SystemSymbolizerFactory(self.system, addr, binary))
+          SystemSymbolizerFactory(self.system, addr, binary, arch))
       result = symbolizers[binary].symbolize(addr, binary, offset)
     # The system symbolizer must produce some result.
     assert result
@@ -479,16 +492,27 @@ class SymbolizationLoop(object):
         symbolized_crash_stacktrace += u'%s\n' % self.current_line
         continue
       _, frameno_str, addr, binary, offset = match.groups()
+      arch = ""
+      # Arch can be embedded in the filename, e.g.: "libabc.dylib:x86_64h"
+      colon_pos = binary.rfind(":")
+      if colon_pos != -1:
+        maybe_arch = binary[colon_pos + 1:]
+        if is_valid_arch(maybe_arch):
+          arch = maybe_arch
+          binary = binary[0:colon_pos]
+      if arch == "":
+        arch = guess_arch(addr)
       if frameno_str == '0':
         # Assume that frame #0 is the first frame of new stack trace.
         self.frame_no = 0
       original_binary = binary
       if self.binary_path_filter:
         binary = self.binary_path_filter(binary)
-      symbolized_line = self.symbolize_address(addr, binary, offset)
+      symbolized_line = self.symbolize_address(addr, binary, offset, arch)
       if not symbolized_line:
         if original_binary != binary:
-          symbolized_line = self.symbolize_address(addr, binary, offset)
+          symbolized_line = self.symbolize_address(addr, original_binary,
+                                                   offset, arch)
 
       if not symbolized_line:
         symbolized_crash_stacktrace += u'%s\n' % self.current_line
@@ -526,7 +550,6 @@ def filter_binary_path(binary_path):
     app_directory = os.path.dirname(app_path)
     binary_filename = os.path.basename(binary_path)
     nfs_directory = environment.get_value('NFS_ROOT')
-    root_directory = environment.get_value('ROOT_DIR')
     symbols_directory = environment.get_value('SYMBOLS_DIR')
 
     # Try to find the library in the build directory first.
@@ -554,7 +577,7 @@ def filter_binary_path(binary_path):
     # Try pulling in the binary directly from the device into the
     # system library cache directory.
     local_binary_path = os.path.join(symbols_directory, binary_filename)
-    adb.run_adb_command('pull %s %s' % (binary_path, local_binary_path))
+    adb.run_command('pull %s %s' % (binary_path, local_binary_path))
     if os.path.exists(local_binary_path):
       return local_binary_path
 
@@ -628,15 +651,15 @@ def download_system_symbols_if_needed(symbols_directory):
   """Download system libraries from |SYMBOLS_URL| and cache locally."""
   # For local testing, we likely do not have access to the authenticated cloud
   # storage bucket with the symbols. In this case, just bail out.
-  if environment.get_value('LOCAL_DEVELOPMENT', False):
+  if environment.get_value('LOCAL_DEVELOPMENT'):
     return
 
   # We have archived symbols for google builds only.
-  if not device.google_device():
+  if not settings.is_google_device():
     return
 
   # Get the build fingerprint parameters.
-  build_params = device.get_build_parameters()
+  build_params = settings.get_build_parameters()
   if not build_params:
     logs.log_error('Unable to determine build parameters.')
     return

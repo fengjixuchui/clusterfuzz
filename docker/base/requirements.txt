@@ -1,6 +1,6 @@
 crcmod==1.7
+future==0.17.1
 psutil==5.4.7
-pyOpenSSL==17.2.0
 tensorflow==1.8.0
 
 # The following are added by pip freeze.
@@ -11,4 +11,4 @@ enum34==1.1.6
 idna==2.7
 ipaddress==1.0.22
 pycparser==2.19
-six==1.11.0
+six==1.12.0

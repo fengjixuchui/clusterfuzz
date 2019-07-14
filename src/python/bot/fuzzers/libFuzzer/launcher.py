@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """libFuzzer launcher."""
+from __future__ import print_function
 # pylint: disable=g-statement-before-imports
+from builtins import object
+from builtins import range
 try:
   # ClusterFuzz dependencies.
   from python.base import modules
@@ -21,27 +24,31 @@ except ImportError:
   pass
 
 import atexit
+import multiprocessing
 import os
 import random
 import re
 import shutil
 import signal
 import stat
+import string
 import sys
 import time
-
-import constants
-import stats
 
 from base import utils
 from bot.fuzzers import dictionary_manager
 from bot.fuzzers import engine_common
 from bot.fuzzers import libfuzzer
+from bot.fuzzers import mutator_plugin
 from bot.fuzzers import strategy
 from bot.fuzzers import utils as fuzzer_utils
+from bot.fuzzers.libFuzzer import constants
+from bot.fuzzers.libFuzzer import stats
+from bot.fuzzers.libFuzzer import strategy_selection
 from bot.fuzzers.ml.rnn import generator as ml_rnn_generator
 from datastore import data_types
 from metrics import logs
+from metrics import profiler
 from system import environment
 from system import minijail
 from system import new_process
@@ -51,30 +58,17 @@ from system import shell
 CRASH_TESTCASE_REGEX = (r'.*Test unit written to\s*'
                         r'(.*(crash|oom|timeout|leak)-.*)')
 
-# Probability of using `-max_len` option. Not applicable if already declared in
-# .options file.
-RANDOM_MAX_LENGTH_PROBABILITY = 0.10
-
 # Maximum length of a random chosen length for `-max_len`.
 MAX_VALUE_FOR_MAX_LENGTH = 10000
 
-# Probability of doing ML RNN mutations on the corpus in this run.
-CORPUS_MUTATION_ML_RNN_PROBABILITY = 0.50
-
-# Probability of doing radamsa mutations on the corpus in this run.
-CORPUS_MUTATION_RADAMSA_PROBABILITY = 0.05
+# Probability of doing DFT-based fuzzing (depends on DFSan build presence).
+DATAFLOW_TRACING_PROBABILITY = 0.25
 
 # Number of radamsa mutations.
 RADAMSA_MUTATIONS = 2000
 
 # Maximum number of seconds to run radamsa for.
 RADAMSA_TIMEOUT = 3
-
-# Probability of recommended dictionary usage.
-RECOMMENDED_DICTIONARY_PROBABILITY = 0.10
-
-# Probability of using `-use_value_profile=1` option.
-VALUE_PROFILE_PROBABILITY = 0.33
 
 # Testcase minimization arguments being used by ClusterFuzz.
 MINIMIZE_TO_ARGUMENT = '--cf-minimize-to='
@@ -90,11 +84,13 @@ LIBFUZZER_PREFIX = 'libfuzzer_'
 # Allow 30 minutes to merge the testcases back into the corpus.
 DEFAULT_MERGE_TIMEOUT = 30 * 60
 
-IS_WIN = environment.platform() == 'WINDOWS'
-
 MERGED_DICT_SUFFIX = '.merged'
 
 ENGINE_ERROR_MESSAGE = 'libFuzzer: engine encountered an error.'
+
+MERGE_DIRECTORY_NAME = 'merge-corpus'
+
+HEXDIGITS_SET = set(string.hexdigits)
 
 
 class Generator(object):
@@ -104,58 +100,25 @@ class Generator(object):
   ML_RNN = 2
 
 
-def _select_generator():
+def _select_generator(strategy_pool, fuzzer_path):
   """Pick a generator to generate new testcases before fuzzing or return
   Generator.NONE if no generator selected."""
-  # We can't use radamsa binary on Windows. Disable ML for now until we know it
-  # works.
-  if IS_WIN:
+  if environment.platform() == 'FUCHSIA':
+    # Unsupported.
     return Generator.NONE
-  elif do_ml_rnn_generator():
+
+  # We can't use radamsa binary on Windows. Disable ML for now until we know it
+  # works on Win.
+  # These generators don't produce testcases that LPM fuzzers can use.
+  if (environment.platform() == 'WINDOWS' or
+      engine_common.is_lpm_fuzz_target(fuzzer_path)):
+    return Generator.NONE
+  elif strategy_pool.do_strategy(strategy.CORPUS_MUTATION_ML_RNN_STRATEGY):
     return Generator.ML_RNN
-  elif do_radamsa_generator():
+  elif strategy_pool.do_strategy(strategy.CORPUS_MUTATION_RADAMSA_STRATEGY):
     return Generator.RADAMSA
 
   return Generator.NONE
-
-
-def do_random_max_length():
-  """Return whether or not to do value profile."""
-  return engine_common.decide_with_probability(
-      engine_common.get_strategy_probability(
-          strategy.RANDOM_MAX_LENGTH_STRATEGY,
-          default=RANDOM_MAX_LENGTH_PROBABILITY))
-
-
-def do_radamsa_generator():
-  """Return whether or not to do radamsa mutations."""
-  return engine_common.decide_with_probability(
-      engine_common.get_strategy_probability(
-          strategy.CORPUS_MUTATION_RADAMSA_STRATEGY,
-          default=CORPUS_MUTATION_RADAMSA_PROBABILITY))
-
-
-def do_ml_rnn_generator():
-  """Return whether or not to do additional mutations."""
-  return engine_common.decide_with_probability(
-      engine_common.get_strategy_probability(
-          strategy.CORPUS_MUTATION_ML_RNN_STRATEGY,
-          default=CORPUS_MUTATION_ML_RNN_PROBABILITY))
-
-
-def do_recommended_dictionary():
-  """Retrn whether or not to use the recommended dictionary."""
-  return engine_common.decide_with_probability(
-      engine_common.get_strategy_probability(
-          strategy.RECOMMENDED_DICTIONARY_STRATEGY,
-          default=RECOMMENDED_DICTIONARY_PROBABILITY))
-
-
-def do_value_profile():
-  """Return whether or not to do value profile."""
-  return engine_common.decide_with_probability(
-      engine_common.get_strategy_probability(
-          strategy.VALUE_PROFILE_STRATEGY, default=VALUE_PROFILE_PROBABILITY))
 
 
 def add_recommended_dictionary(arguments, fuzzer_name, fuzzer_path):
@@ -173,7 +136,7 @@ def add_recommended_dictionary(arguments, fuzzer_name, fuzzer_path):
     if not dict_manager.download_recommended_dictionary_from_gcs(
         recommended_dictionary_path):
       return False
-  except Exception, ex:
+  except Exception as ex:
     logs.log_error(
         'Exception downloading recommended dictionary:\n%s.' % str(ex))
     return False
@@ -349,7 +312,7 @@ def generate_new_testcase_mutations(corpus_directory, fuzzer_name, generator,
 
     # If new mutations are successfully generated, add radamsa stragegy.
     if shell.get_directory_file_count(new_testcase_mutations_directory):
-      fuzzing_strategies.append(strategy.CORPUS_MUTATION_RADAMSA_STRATEGY)
+      fuzzing_strategies.append(strategy.CORPUS_MUTATION_RADAMSA_STRATEGY.name)
 
   # Generate new testcase mutations using ML RNN model.
   elif generator == Generator.ML_RNN:
@@ -359,20 +322,21 @@ def generate_new_testcase_mutations(corpus_directory, fuzzer_name, generator,
 
     # If new mutations are successfully generated, add ml rnn stragegy.
     if shell.get_directory_file_count(new_testcase_mutations_directory):
-      fuzzing_strategies.append(strategy.CORPUS_MUTATION_ML_RNN_STRATEGY)
+      fuzzing_strategies.append(strategy.CORPUS_MUTATION_ML_RNN_STRATEGY.name)
 
   return new_testcase_mutations_directory
 
 
 def get_corpus_directories(main_corpus_directory,
+                           new_testcases_directory,
                            fuzzer_path,
                            fuzzing_strategies,
-                           minijail_chroot=None):
-  """Return a list of corpus directories to be passed to the fuzzer binary."""
+                           strategy_pool,
+                           minijail_chroot=None,
+                           allow_corpus_subset=True):
+  """Return a list of corpus directories to be passed to the fuzzer binary for
+  fuzzing."""
   corpus_directories = []
-
-  # Set up scratch directory for writing new units.
-  new_testcases_directory = create_corpus_directory('new')
 
   corpus_directories.append(new_testcases_directory)
 
@@ -383,14 +347,15 @@ def get_corpus_directories(main_corpus_directory,
   subset_size = engine_common.random_choice(
       engine_common.CORPUS_SUBSET_NUM_TESTCASES)
 
-  if (engine_common.do_corpus_subset() and
+  if (allow_corpus_subset and
+      strategy_pool.do_strategy(strategy.CORPUS_SUBSET_STRATEGY) and
       shell.get_directory_file_count(main_corpus_directory) > subset_size):
     # Copy |subset_size| testcases into 'subset' directory.
     corpus_subset_directory = create_corpus_directory('subset')
     copy_from_corpus(corpus_subset_directory, main_corpus_directory,
                      subset_size)
     corpus_directories.append(corpus_subset_directory)
-    fuzzing_strategies.append(strategy.CORPUS_SUBSET_STRATEGY + '_' +
+    fuzzing_strategies.append(strategy.CORPUS_SUBSET_STRATEGY.name + '_' +
                               str(subset_size))
     if minijail_chroot:
       bind_corpus_dirs(minijail_chroot, [main_corpus_directory])
@@ -469,14 +434,14 @@ def get_radamsa_path():
 
 def remove_fuzzing_arguments(arguments):
   """Remove arguments used during fuzzing."""
-  # Remove un-needed dictionary argument.
-  fuzzer_utils.extract_argument(arguments, constants.DICT_FLAG)
-
-  # 'max_len' option may shrink the testcase if its size greater than 'max_len'.
-  fuzzer_utils.extract_argument(arguments, constants.MAX_LEN_FLAG)
-
-  # Remove custom '-runs' argument.
-  fuzzer_utils.extract_argument(arguments, constants.RUNS_FLAG)
+  for argument in [
+      constants.DICT_FLAG,  # User for fuzzing only.
+      constants.MAX_LEN_FLAG,  # This may shrink the testcases.
+      constants.RUNS_FLAG,  # Make sure we don't have any '-runs' argument.
+      constants.FORK_FLAG,  # It overrides `-merge` argument.
+      constants.COLLECT_DATA_FLOW_FLAG,  # Used for fuzzing only.
+  ]:
+    fuzzer_utils.extract_argument(arguments, argument)
 
 
 def load_testcase_if_exists(fuzzer_runner,
@@ -499,14 +464,15 @@ def load_testcase_if_exists(fuzzer_runner,
   result = fuzzer_runner.run_single_testcase(
       testcase_file_path, additional_args=arguments)
 
-  print 'Running command:', get_printable_command(
-      result.command, fuzzer_runner.executable_path, use_minijail)
+  print('Running command:',
+        get_printable_command(result.command, fuzzer_runner.executable_path,
+                              use_minijail))
   output_lines = result.output.splitlines()
 
   # Parse performance features to extract custom crash flags.
   parsed_stats = stats.parse_performance_features(output_lines, [], [])
   add_custom_crash_state_if_needed(fuzzer_name, output_lines, parsed_stats)
-  print '\n'.join(output_lines)
+  print('\n'.join(output_lines))
 
 
 def parse_log_stats(log_lines):
@@ -605,9 +571,10 @@ def minimize_testcase(runner, testcase_file_path, minimize_to, minimize_timeout,
       minimize_timeout,
       additional_args=arguments)
 
-  print 'Running command:', get_printable_command(
-      result.command, runner.executable_path, use_minijail)
-  print result.output
+  print('Running command:',
+        get_printable_command(result.command, runner.executable_path,
+                              use_minijail))
+  print(result.output)
 
 
 def cleanse_testcase(runner, testcase_file_path, cleanse_to, cleanse_timeout,
@@ -631,9 +598,10 @@ def cleanse_testcase(runner, testcase_file_path, cleanse_to, cleanse_timeout,
       cleanse_timeout,
       additional_args=arguments)
 
-  print 'Running command:', get_printable_command(
-      result.command, runner.executable_path, use_minijail)
-  print result.output
+  print('Running command:',
+        get_printable_command(result.command, runner.executable_path,
+                              use_minijail))
+  print(result.output)
 
 
 def get_printable_command(command, fuzzer_path, use_minijail):
@@ -642,6 +610,68 @@ def get_printable_command(command, fuzzer_path, use_minijail):
     command = engine_common.strip_minijail_command(command, fuzzer_path)
 
   return engine_common.get_command_quoted(command)
+
+
+def use_mutator_plugin(target_name, extra_env, chroot):
+  """Decide whether to use a mutator plugin. If yes and there is a usable plugin
+  available for |target_name|, then add it to LD_PRELOAD in |extra_env|, add
+  chroot bindings if |chroot| is not None, and return True."""
+
+  # TODO(metzman): Support Windows.
+  if environment.platform() == 'WINDOWS':
+    return False
+
+  mutator_plugin_path = mutator_plugin.get_mutator_plugin(target_name)
+  if not mutator_plugin_path:
+    return False
+
+  logs.log('Using mutator plugin: %s' % mutator_plugin_path)
+  # TODO(metzman): Change the strategy to record which plugin was used, and
+  # not simply that a plugin was used.
+  extra_env['LD_PRELOAD'] = mutator_plugin_path
+
+  if chroot:
+    mutator_plugin_dir = os.path.dirname(mutator_plugin_path)
+    chroot.add_binding(
+        minijail.ChrootBinding(mutator_plugin_dir, mutator_plugin_dir, False))
+
+  return True
+
+
+def get_merge_directory():
+  """Returns the path of the directory we can use for merging."""
+  temp_dir = fuzzer_utils.get_temp_dir()
+  return os.path.join(temp_dir, MERGE_DIRECTORY_NAME)
+
+
+def create_merge_directory():
+  """Create the merge directory and return its path."""
+  merge_directory_path = get_merge_directory()
+  shell.create_directory(
+      merge_directory_path, create_intermediates=True, recreate=True)
+  return merge_directory_path
+
+
+def is_sha1_hash(possible_hash):
+  """Returns True if |possible_hash| looks like a valid sha1 hash."""
+  if len(possible_hash) != 40:
+    return False
+
+  return all(char in HEXDIGITS_SET for char in possible_hash)
+
+
+def move_mergeable_units(merge_directory, corpus_directory):
+  """Move new units in |merge_directory| into |corpus_directory|."""
+  initial_units = set(
+      os.path.basename(filename)
+      for filename in shell.get_files_list(corpus_directory))
+
+  for unit_path in shell.get_files_list(merge_directory):
+    unit_name = os.path.basename(unit_path)
+    if unit_name in initial_units and is_sha1_hash(unit_name):
+      continue
+    dest_path = os.path.join(corpus_directory, unit_name)
+    shell.move(unit_path, dest_path)
 
 
 def main(argv):
@@ -662,6 +692,8 @@ def main(argv):
           'engine': 'libFuzzer',
           'job_name': environment.get_value('JOB_NAME')
       })
+
+  profiler.start_if_needed('libfuzzer_launcher')
 
   # Make sure that the fuzzer binary exists.
   build_directory = environment.get_value('BUILD_DIR')
@@ -721,7 +753,8 @@ def main(argv):
     return
 
   # If we don't have a corpus, then that means this is not a fuzzing run.
-  if not corpus_directory:
+  # TODO(flowerhack): Implement this to properly load past testcases.
+  if not corpus_directory and environment.platform() != 'FUCHSIA':
     load_testcase_if_exists(runner, testcase_file_path, fuzzer_name,
                             use_minijail, arguments)
     return
@@ -743,18 +776,53 @@ def main(argv):
     if os.path.exists(default_dict_path):
       arguments.append(constants.DICT_FLAG + default_dict_path)
 
+  # Strategy pool is the list of strategies that we attempt to enable, whereas
+  # fuzzing strategies is the list of strategies that are enabled. (e.g. if
+  # mutator is selected in the pool, but not available for a given target, it
+  # would not be added to fuzzing strategies.)
+  strategy_pool = strategy_selection.generate_weighted_strategy_pool()
   fuzzing_strategies = []
 
   # Select a generator to use for existing testcase mutations.
-  generator = _select_generator()
+  generator = _select_generator(strategy_pool, fuzzer_path)
   is_mutations_run = generator != Generator.NONE
+
+  # Depends on the presense of DFSan instrumented build.
+  dataflow_build_dir = environment.get_value('DATAFLOW_BUILD_DIR')
+  use_dataflow_tracing = (
+      dataflow_build_dir and
+      strategy_pool.do_strategy(strategy.DATAFLOW_TRACING_STRATEGY))
+  if use_dataflow_tracing:
+    dataflow_binary_path = os.path.join(
+        dataflow_build_dir, os.path.relpath(fuzzer_path, build_directory))
+    if os.path.exists(dataflow_binary_path):
+      arguments.append(
+          '%s%s' % (constants.COLLECT_DATA_FLOW_FLAG, dataflow_binary_path))
+      fuzzing_strategies.append(strategy.DATAFLOW_TRACING_STRATEGY.name)
+    else:
+      logs.log_error(
+          'Fuzz target is not found in dataflow build, skiping strategy.')
+      use_dataflow_tracing = False
 
   # Timeout for fuzzer run.
   fuzz_timeout = get_fuzz_timeout(is_mutations_run)
 
+  # Set up scratch directory for writing new units.
+  new_testcases_directory = create_corpus_directory('new')
+
   # Get list of corpus directories.
-  corpus_directories = get_corpus_directories(
-      corpus_directory, fuzzer_path, fuzzing_strategies, minijail_chroot)
+  # TODO(flowerhack): Implement this to handle corpus sync'ing.
+  if environment.platform() == 'FUCHSIA':
+    corpus_directories = []
+  else:
+    corpus_directories = get_corpus_directories(
+        corpus_directory,
+        new_testcases_directory,
+        fuzzer_path,
+        fuzzing_strategies,
+        strategy_pool,
+        minijail_chroot=minijail_chroot,
+        allow_corpus_subset=not use_dataflow_tracing)
 
   # Bind corpus directories in minijail.
   if use_minijail:
@@ -772,26 +840,41 @@ def main(argv):
     if use_minijail:
       bind_corpus_dirs(minijail_chroot, [new_testcase_mutations_directory])
 
-  max_len_argument = fuzzer_utils.extract_argument(
-      arguments, constants.MAX_LEN_FLAG, remove=False)
-  if not max_len_argument and do_random_max_length():
-    max_length = random.SystemRandom().randint(1, MAX_VALUE_FOR_MAX_LENGTH)
-    arguments.append('%s%d' % (constants.MAX_LEN_FLAG, max_length))
-    fuzzing_strategies.append(strategy.RANDOM_MAX_LENGTH_STRATEGY)
+  if strategy_pool.do_strategy(strategy.RANDOM_MAX_LENGTH_STRATEGY):
+    max_len_argument = fuzzer_utils.extract_argument(
+        arguments, constants.MAX_LEN_FLAG, remove=False)
+    if not max_len_argument:
+      max_length = random.SystemRandom().randint(1, MAX_VALUE_FOR_MAX_LENGTH)
+      arguments.append('%s%d' % (constants.MAX_LEN_FLAG, max_length))
+      fuzzing_strategies.append(strategy.RANDOM_MAX_LENGTH_STRATEGY.name)
 
-  if do_recommended_dictionary():
-    if add_recommended_dictionary(arguments, fuzzer_name, fuzzer_path):
-      fuzzing_strategies.append(strategy.RECOMMENDED_DICTIONARY_STRATEGY)
+  if (strategy_pool.do_strategy(strategy.RECOMMENDED_DICTIONARY_STRATEGY) and
+      add_recommended_dictionary(arguments, fuzzer_name, fuzzer_path)):
+    fuzzing_strategies.append(strategy.RECOMMENDED_DICTIONARY_STRATEGY.name)
 
-  if do_value_profile():
+  if strategy_pool.do_strategy(strategy.VALUE_PROFILE_STRATEGY):
     arguments.append(constants.VALUE_PROFILE_ARGUMENT)
-    fuzzing_strategies.append(strategy.VALUE_PROFILE_STRATEGY)
+    fuzzing_strategies.append(strategy.VALUE_PROFILE_STRATEGY.name)
+
+  # DataFlow Tracing requires fork mode, always use it with DFT strategy.
+  if use_dataflow_tracing or strategy_pool.do_strategy(strategy.FORK_STRATEGY):
+    max_fuzz_threads = environment.get_value('MAX_FUZZ_THREADS', 1)
+    num_fuzz_processes = max(1, multiprocessing.cpu_count() // max_fuzz_threads)
+    arguments.append('%s%d' % (constants.FORK_FLAG, num_fuzz_processes))
+    fuzzing_strategies.append(
+        '%s_%d' % (strategy.FORK_STRATEGY.name, num_fuzz_processes))
+
+  extra_env = {}
+  if (strategy_pool.do_strategy(strategy.MUTATOR_PLUGIN_STRATEGY) and
+      use_mutator_plugin(target_name, extra_env, minijail_chroot)):
+    fuzzing_strategies.append(strategy.MUTATOR_PLUGIN_STRATEGY.name)
 
   # Execute the fuzzer binary with original arguments.
   fuzz_result = runner.fuzz(
       corpus_directories,
       fuzz_timeout=fuzz_timeout,
-      additional_args=arguments + [artifact_prefix])
+      additional_args=arguments + [artifact_prefix],
+      extra_env=extra_env)
 
   if (not use_minijail and
       fuzz_result.return_code == constants.LIBFUZZER_ERROR_EXITCODE):
@@ -831,8 +914,8 @@ def main(argv):
   if use_minijail:
     # Remove minijail prefix.
     command = engine_common.strip_minijail_command(command, fuzzer_path)
-  print log_header_format % (engine_common.get_command_quoted(command),
-                             bot_name, fuzz_result.time_executed)
+  print(log_header_format % (engine_common.get_command_quoted(command),
+                             bot_name, fuzz_result.time_executed))
 
   # Parse stats information based on libFuzzer output.
   parsed_stats = parse_log_stats(log_lines)
@@ -856,17 +939,17 @@ def main(argv):
       'fuzzing_time_percent': fuzzing_time_percent,
   }
 
+  # Remove fuzzing arguments before merge and dictionary analysis step.
+  remove_fuzzing_arguments(arguments)
+
   # Make a decision on whether merge step is needed at all. If there are no
   # new units added by libFuzzer run, then no need to do merge at all.
-  new_units_added = parsed_stats.get('new_units_added', 0)
+  new_units_added = shell.get_directory_file_count(new_testcases_directory)
   merge_error = None
   if new_units_added:
-    # Merge the new units back into the corpus.
-    # For merge, main corpus directory should be passed first of all corpus
-    # directories.
-    if corpus_directory in corpus_directories:
-      corpus_directories.remove(corpus_directory)
-    corpus_directories = [corpus_directory] + corpus_directories
+    # Merge the new units with the initial corpus.
+    if corpus_directory not in corpus_directories:
+      corpus_directories.append(corpus_directory)
 
     # If this times out, it's possible that we will miss some units. However, if
     # we're taking >10 minutes to load/merge the corpus something is going very
@@ -879,11 +962,19 @@ def main(argv):
       engine_common.recreate_directory(merge_tmp_dir)
 
     old_corpus_len = shell.get_directory_file_count(corpus_directory)
+    merge_directory = create_merge_directory()
+    corpus_directories.insert(0, merge_directory)
+
+    if use_minijail:
+      bind_corpus_dirs(minijail_chroot, [merge_directory])
+
     merge_result = runner.merge(
         corpus_directories,
         merge_timeout=engine_common.get_merge_timeout(DEFAULT_MERGE_TIMEOUT),
         tmp_dir=merge_tmp_dir,
         additional_args=arguments)
+
+    move_mergeable_units(merge_directory, corpus_directory)
     new_corpus_len = shell.get_directory_file_count(corpus_directory)
     new_units_added = 0
 
@@ -906,8 +997,10 @@ def main(argv):
 
   # Get corpus size after merge. This removes the duplicate units that were
   # created during this fuzzing session.
-  stat_overrides['corpus_size'] = shell.get_directory_file_count(
-      corpus_directory)
+  # TODO(flowerhack): Remove this workaround once we can handle corpus sync.
+  if environment.platform() != 'FUCHSIA':
+    stat_overrides['corpus_size'] = shell.get_directory_file_count(
+        corpus_directory)
 
   # Delete all corpus directories except for the main one. These were temporary
   # directories to store new testcase mutations and have already been merged to
@@ -930,21 +1023,20 @@ def main(argv):
   # Add custom crash state based on fuzzer name (if needed).
   add_custom_crash_state_if_needed(fuzzer_name, log_lines, parsed_stats)
   for line in log_lines:
-    print line
+    print(line)
 
   # Add fuzzing strategies used.
   engine_common.print_fuzzing_strategies(fuzzing_strategies)
 
   # Add merge error (if any).
   if merge_error:
-    print data_types.CRASH_STACKTRACE_END_MARKER
-    print merge_error
-    print 'Command:', get_printable_command(merge_result.command, fuzzer_path,
-                                            use_minijail)
-    print merge_result.output
+    print(data_types.CRASH_STACKTRACE_END_MARKER)
+    print(merge_error)
+    print('Command:',
+          get_printable_command(merge_result.command, fuzzer_path,
+                                use_minijail))
+    print(merge_result.output)
 
-  # Remove dictionary argument used for fuzzing, it is not needed for analysis.
-  fuzzer_utils.extract_argument(arguments, constants.DICT_FLAG)
   analyze_and_update_recommended_dictionary(runner, fuzzer_name, log_lines,
                                             corpus_directory, arguments)
 
@@ -952,11 +1044,12 @@ def main(argv):
   if use_minijail:
     minijail_chroot.close()
 
-  # Whenever new units are added to corpus, record the stats to make them
-  # easily searchable in stackdriver.
+  # Record the stats to make them easily searchable in stackdriver.
   if new_units_added:
     logs.log(
         'New units added to corpus: %d.' % new_units_added, stats=parsed_stats)
+  else:
+    logs.log('No new units found.', stats=parsed_stats)
 
 
 if __name__ == '__main__':

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Common functionality for engine fuzzers (ie: libFuzzer or AFL)."""
+from __future__ import print_function
 
 import contextlib
 import glob
@@ -38,9 +39,6 @@ from system import shell
 # See https://crbug.com/682311 for more information.
 # Size 100 has a slightly higher chance as it seems to be the best one so far.
 CORPUS_SUBSET_NUM_TESTCASES = [10, 20, 50, 75, 75, 100, 100, 100, 125, 125, 150]
-
-# Probability of fuzzing from a subset of the corpus.
-CORPUS_SUBSET_PROBABILITY = 0.50
 
 # Suffix used for seed corpus archive generated with build. Does not include
 # file extension.
@@ -81,7 +79,8 @@ def do_corpus_subset():
   """Return whether or not to do corpus subset."""
   return decide_with_probability(
       get_strategy_probability(
-          strategy.CORPUS_SUBSET_STRATEGY, default=CORPUS_SUBSET_PROBABILITY))
+          strategy.CORPUS_SUBSET_STRATEGY.name,
+          default=strategy.CORPUS_SUBSET_STRATEGY.probability))
 
 
 def decide_with_probability(probability):
@@ -104,6 +103,10 @@ def dump_big_query_data(stats, testcase_file_path, fuzzer_name_prefix,
 
 def find_fuzzer_path(build_directory, fuzzer_name):
   """Find the fuzzer path with the given name."""
+  if environment.platform() == 'FUCHSIA':
+    # Fuchsia targets are not on disk.
+    return fuzzer_name
+
   # TODO(ochang): This is necessary for legacy testcases, which include the
   # project prefix in arguments. Remove this in the near future.
   project_name = environment.get_value('PROJECT_NAME')
@@ -151,6 +154,14 @@ def get_merge_timeout(default_merge_timeout):
   """Get the maximum amount of time that should be spent merging a corpus."""
   return get_overridable_timeout(default_merge_timeout,
                                  'MERGE_TIMEOUT_OVERRIDE')
+
+
+def is_lpm_fuzz_target(fuzzer_path):
+  """Returns True if |fuzzer_path| is a libprotobuf-mutator based fuzz
+  target."""
+  # TODO(metzman): Use this function to disable running LPM targets with AFL.
+  with open(fuzzer_path) as file_handle:
+    return utils.search_string_in_file('TestOneProtoInput', file_handle)
 
 
 def get_issue_owners(fuzz_target_path):
@@ -216,7 +227,7 @@ def get_issue_labels(fuzz_target_path):
 def print_fuzzing_strategies(fuzzing_strategies):
   """Print the strategies used for logging purposes."""
   if fuzzing_strategies:
-    print 'cf::fuzzing_strategies: %s' % (','.join(fuzzing_strategies))
+    print('cf::fuzzing_strategies: %s' % (','.join(fuzzing_strategies)))
 
 
 def random_choice(sequence):
@@ -287,7 +298,7 @@ class MinijailEngineFuzzerRunner(minijail.MinijailProcessRunner):
 
 def signal_term_handler(sig, frame):  # pylint: disable=unused-argument
   try:
-    print 'SIGTERMed'
+    print('SIGTERMed')
   except IOError:  # Pipe may already be closed and we may not be able to print.
     pass
 

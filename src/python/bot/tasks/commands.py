@@ -14,6 +14,7 @@
 """Run command based on the current task."""
 
 import functools
+import six
 import sys
 import time
 
@@ -34,10 +35,8 @@ from bot.tasks import symbolize_task
 from bot.tasks import unpack_task
 from bot.tasks import upload_reports_task
 from bot.webserver import http_server
-from config import db_config
 from datastore import data_handler
 from datastore import data_types
-from issue_management import issue_tracker_utils
 from metrics import logs
 from system import environment
 from system import process_handler
@@ -83,9 +82,6 @@ def cleanup_task_state():
   # Reset memory tool environment variables.
   environment.reset_current_memory_tool_options()
 
-  # Clear issue tracker manager instances.
-  issue_tracker_utils.clear_issue_tracker_managers()
-
   # Clear exceptions.
   sys.exc_clear()
 
@@ -113,16 +109,11 @@ def is_supported_cpu_arch_for_job():
 
 def update_environment_for_job(environment_string):
   """Process the environment variable string included with a job."""
-  # Stacktraces to ignore for found crashes.
-  # This is set in admin configuration.
-  environment.set_value('CRASH_EXCLUSIONS',
-                        db_config.get_value('stack_blacklist'))
-
   # Now parse the job's environment definition.
   environment_values = (
       environment.parse_environment_definition(environment_string))
 
-  for key, value in environment_values.iteritems():
+  for key, value in six.iteritems(environment_values):
     environment.set_value(key, value)
 
   # If we share the build with another job type, force us to be a custom binary
@@ -308,7 +299,6 @@ def process_command(task):
           environment_string = minimize_job.get_environment_string()
           environment_string += '\nORIGINAL_JOB_NAME = %s\n' % job_name
           job_name = minimize_job_override
-          job = minimize_job
         else:
           logs.log_error(
               'Job for minimization not found: %s.' % minimize_job_override)

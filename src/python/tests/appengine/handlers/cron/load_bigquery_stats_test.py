@@ -38,14 +38,12 @@ class LoadBigQueryStatsTest(unittest.TestCase):
     data_types.Job(name='job').put()
 
     test_helpers.patch(self, [
-        'google.appengine.api.app_identity.get_application_id',
         'google_cloud_utils.big_query.get_api_client',
         'handlers.base_handler.Handler.is_cron',
         'handlers.cron.load_bigquery_stats.Handler._utc_now',
     ])
 
     self.mock._utc_now.return_value = datetime.datetime(2016, 9, 8)  # pylint: disable=protected-access
-    self.mock.get_application_id.return_value = 'app_id'
     self.mock_bigquery = mock.MagicMock()
     self.mock.get_api_client.return_value = self.mock_bigquery
 
@@ -55,10 +53,10 @@ class LoadBigQueryStatsTest(unittest.TestCase):
 
     self.mock_bigquery.datasets().insert.assert_has_calls([
         mock.call(
-            projectId='app_id',
+            projectId='test-clusterfuzz',
             body={
                 'datasetReference': {
-                    'projectId': 'app_id',
+                    'projectId': 'test-clusterfuzz',
                     'datasetId': 'fuzzer_stats'
                 }
             }),
@@ -72,13 +70,13 @@ class LoadBigQueryStatsTest(unittest.TestCase):
                     'type': 'DAY'
                 },
                 'tableReference': {
-                    'projectId': 'app_id',
+                    'projectId': 'test-clusterfuzz',
                     'tableId': 'JobRun',
                     'datasetId': 'fuzzer_stats',
                 },
             },
             datasetId='fuzzer_stats',
-            projectId='app_id'),
+            projectId='test-clusterfuzz'),
         mock.call().execute(),
         mock.call(
             body={
@@ -86,13 +84,13 @@ class LoadBigQueryStatsTest(unittest.TestCase):
                     'type': 'DAY'
                 },
                 'tableReference': {
-                    'projectId': 'app_id',
+                    'projectId': 'test-clusterfuzz',
                     'tableId': 'TestcaseRun',
                     'datasetId': 'fuzzer_stats',
                 },
             },
             datasetId='fuzzer_stats',
-            projectId='app_id'),
+            projectId='test-clusterfuzz'),
         mock.call().execute(),
     ])
 
@@ -102,14 +100,12 @@ class LoadBigQueryStatsTest(unittest.TestCase):
                 body={
                     'configuration': {
                         'load': {
-                            'autodetect':
-                                False,
                             'destinationTable': {
-                                'projectId': 'app_id',
+                                'projectId': 'test-clusterfuzz',
                                 'tableId': 'JobRun$20160907',
                                 'datasetId': 'fuzzer_stats'
                             },
-                            'schemaUpdateOptions': ['ALLOW_FIELD_ADDITION'],
+                            'schemaUpdateOptions': ['ALLOW_FIELD_ADDITION',],
                             'writeDisposition':
                                 'WRITE_TRUNCATE',
                             'sourceUris': [
@@ -118,25 +114,84 @@ class LoadBigQueryStatsTest(unittest.TestCase):
                             ],
                             'sourceFormat':
                                 'NEWLINE_DELIMITED_JSON',
-                            'ignoreUnknownValues':
-                                True,
+                            'schema': {
+                                'fields': [{
+                                    'type': 'INTEGER',
+                                    'name': 'testcases_executed',
+                                    'mode': 'NULLABLE'
+                                }, {
+                                    'type': 'INTEGER',
+                                    'name': 'build_revision',
+                                    'mode': 'NULLABLE'
+                                }, {
+                                    'type': 'INTEGER',
+                                    'name': 'new_crashes',
+                                    'mode': 'NULLABLE'
+                                }, {
+                                    'type': 'STRING',
+                                    'name': 'job',
+                                    'mode': 'NULLABLE'
+                                }, {
+                                    'type': 'FLOAT',
+                                    'name': 'timestamp',
+                                    'mode': 'NULLABLE'
+                                }, {
+                                    'fields': [{
+                                        'type': 'STRING',
+                                        'name': 'crash_type',
+                                        'mode': 'NULLABLE'
+                                    }, {
+                                        'type': 'BOOLEAN',
+                                        'name': 'is_new',
+                                        'mode': 'NULLABLE'
+                                    }, {
+                                        'type': 'STRING',
+                                        'name': 'crash_state',
+                                        'mode': 'NULLABLE'
+                                    }, {
+                                        'type': 'BOOLEAN',
+                                        'name': 'security_flag',
+                                        'mode': 'NULLABLE'
+                                    }, {
+                                        'type': 'INTEGER',
+                                        'name': 'count',
+                                        'mode': 'NULLABLE'
+                                    }],
+                                    'type':
+                                        'RECORD',
+                                    'name':
+                                        'crashes',
+                                    'mode':
+                                        'REPEATED'
+                                }, {
+                                    'type': 'INTEGER',
+                                    'name': 'known_crashes',
+                                    'mode': 'NULLABLE'
+                                }, {
+                                    'type': 'STRING',
+                                    'name': 'fuzzer',
+                                    'mode': 'NULLABLE'
+                                }, {
+                                    'type': 'STRING',
+                                    'name': 'kind',
+                                    'mode': 'NULLABLE'
+                                }]
+                            },
                         }
                     }
                 },
-                projectId='app_id'),
+                projectId='test-clusterfuzz'),
             mock.call().execute(),
             mock.call(
                 body={
                     'configuration': {
                         'load': {
-                            'autodetect':
-                                True,
                             'destinationTable': {
-                                'projectId': 'app_id',
+                                'projectId': 'test-clusterfuzz',
                                 'tableId': 'TestcaseRun$20160907',
                                 'datasetId': 'fuzzer_stats'
                             },
-                            'schemaUpdateOptions': ['ALLOW_FIELD_ADDITION'],
+                            'schemaUpdateOptions': ['ALLOW_FIELD_ADDITION',],
                             'writeDisposition':
                                 'WRITE_TRUNCATE',
                             'sourceUris': [
@@ -145,12 +200,10 @@ class LoadBigQueryStatsTest(unittest.TestCase):
                             ],
                             'sourceFormat':
                                 'NEWLINE_DELIMITED_JSON',
-                            'ignoreUnknownValues':
-                                True,
                         }
                     }
                 },
-                projectId='app_id'),
+                projectId='test-clusterfuzz'),
             mock.call().execute(),
         ],
         # Otherwise we need to mock two calls to mock.call().execute().__str__()

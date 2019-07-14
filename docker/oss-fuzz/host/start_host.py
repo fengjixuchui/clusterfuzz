@@ -12,6 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Start host."""
+from __future__ import print_function
+
+from future import standard_library
+standard_library.install_aliases()
+from builtins import range
 import os
 import shutil
 import socket
@@ -55,7 +60,7 @@ def start_bot_instance(instance_num):
     os.mkdir(tmp_directory)
 
   env['ROOT_DIR'] = bot_root_directory
-  env['TMPDIR'] = tmp_directory
+  env['BOT_TMPDIR'] = tmp_directory
   env['PYTHONPATH'] = (
       '%s/src:%s' % (bot_root_directory, env['APPENGINE_SDK_PATH']))
 
@@ -71,14 +76,14 @@ def start_bot_instance(instance_num):
         env=env,
         cwd=bot_root_directory)
     bot_proc.wait()
-    print >> sys.stderr, 'Instance %i exited.' % instance_num
+    print('Instance %i exited.' % instance_num, file=sys.stderr)
 
 
 def main():
   setup_environment()
 
-  for i in xrange(NUM_WORKERS_PER_HOST):
-    print 'Starting bot %i.' % i
+  for i in range(NUM_WORKERS_PER_HOST):
+    print('Starting bot %i.' % i)
     thread = threading.Thread(target=start_bot_instance, args=(i,))
     thread.start()
 

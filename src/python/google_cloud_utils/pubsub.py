@@ -13,6 +13,7 @@
 # limitations under the License.
 """Pub/Sub helpers."""
 
+from builtins import object
 import base64
 import collections
 import httplib2
@@ -20,7 +21,6 @@ import json
 import threading
 
 import googleapiclient
-from googleapiclient import discovery
 
 from base import retry
 from google_cloud_utils import credentials
@@ -86,14 +86,15 @@ class PubSubClient(object):
     if emulator_host:
       # Replace real discovery document's root url with the emulator.
       _, discovery_doc = httplib2.Http().request(
-          discovery.DISCOVERY_URI.format(api='pubsub', apiVersion='v1'))
+          googleapiclient.discovery.DISCOVERY_URI.format(
+              api='pubsub', apiVersion='v1'))
       discovery_doc = json.loads(discovery_doc)
       discovery_doc['rootUrl'] = 'http://{}/'.format(emulator_host)
 
-      self._local.api_client = discovery.build_from_document(
+      self._local.api_client = googleapiclient.discovery.build_from_document(
           discovery_doc, credentials=creds)
     else:
-      self._local.api_client = discovery.build(
+      self._local.api_client = googleapiclient.discovery.build(
           'pubsub', 'v1', cache_discovery=False, credentials=creds)
 
     return self._local.api_client
@@ -153,6 +154,8 @@ class PubSubClient(object):
     request = self._api_client().projects().subscriptions().pull(
         subscription=subscription, body=request_body)
     response = self._execute_with_retry(request)
+    if response is None:
+      raise RuntimeError('Invalid subscription: ' + subscription)
 
     received_messages = response.get('receivedMessages')
     if not received_messages:

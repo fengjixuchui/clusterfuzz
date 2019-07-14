@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Heartbeat script wrapper."""
+from __future__ import print_function
 
 # We want to use utf-8 encoding everywhere throughout the application
 # instead of the default 'ascii' encoding. This must happen before any
@@ -40,7 +41,7 @@ BEAT_SCRIPT = 'heartbeat.py'
 def main():
   """Update the heartbeat if there is bot activity."""
   if len(sys.argv) < 2:
-    print 'Usage: %s <log file>' % sys.argv[0]
+    print('Usage: %s <log file>' % sys.argv[0])
     return
 
   environment.set_bot_environment()
@@ -52,7 +53,8 @@ def main():
   # Get absolute path to heartbeat script and interpreter needed to execute it.
   startup_scripts_directory = environment.get_startup_scripts_directory()
   beat_script_path = os.path.join(startup_scripts_directory, BEAT_SCRIPT)
-  beat_interpreter = shell.get_interpreter_for_command(beat_script_path)
+  beat_interpreter = shell.get_interpreter(beat_script_path)
+  assert beat_interpreter
 
   while True:
     beat_command = [

@@ -14,14 +14,16 @@
 """Tests for libFuzzer launcher script."""
 # pylint: disable=unused-argument
 
+from future import standard_library
+standard_library.install_aliases()
+from builtins import object
+from builtins import range
 import copy
-import os
-import shutil
-from StringIO import StringIO
-import unittest
-
 import mock
+import os
 import pyfakefs.fake_filesystem_unittest as fake_fs_unittest
+import shutil
+import unittest
 
 from bot.fuzzers import engine_common
 from bot.fuzzers import libfuzzer
@@ -29,6 +31,7 @@ from bot.fuzzers import strategy
 from bot.fuzzers.libFuzzer import constants
 from bot.fuzzers.libFuzzer import launcher
 from bot.fuzzers.libFuzzer import stats
+from bot.fuzzers.libFuzzer import strategy_selection
 from metrics import fuzzer_stats
 from system import environment
 from tests.test_libs import helpers as test_helpers
@@ -41,6 +44,9 @@ BUILD_DIR = '/fake/build_dir'
 FUZZ_INPUTS_DISK = '/fake/inputs-disk'
 GSUTIL_PATH = '/fake/gsutil_path'
 FAKE_ROOT_DIR = '/fake_root'
+
+# An arbirtrary SHA1 sum.
+ARBITRARY_SHA1_HASH = 'dd122581c8cd44d0227f9c305581ffcb4b6f1b46'
 
 
 def _read_test_data(name):
@@ -88,7 +94,7 @@ def create_mock_popen(output,
 
     def _write_fake_units(self):
       """Mock writing of new units."""
-      for i in xrange(number_of_testcases):
+      for i in range(number_of_testcases):
         with open(os.path.join(corpus_path, str(i)), 'w') as f:
           f.write(str(i))
 
@@ -96,7 +102,7 @@ def create_mock_popen(output,
 
     def communicate(self, input_data=None):
       """Mock subprocess.Popen.communicate."""
-      if self.command[0].endswith('_fuzzer'):
+      if '/fake/build_dir/fake_fuzzer' in self.command:
         if '-merge=1' in self.command:
           # Mock merge.
           self._do_merge()
@@ -129,6 +135,17 @@ def mock_create_chroot_dir(base_dir):
   return path
 
 
+def set_strategy_pool(strategies=None):
+  """Helper method to create instances of strategy pools
+  for patching use."""
+  strategy_pool = strategy_selection.StrategyPool()
+
+  if strategies is not None:
+    for strategy_tuple in strategies:
+      strategy_pool.add_strategy(strategy_tuple)
+  return strategy_pool
+
+
 @mock.patch('bot.fuzzers.engine_common.current_timestamp', lambda: 1337.0)
 @mock.patch('system.minijail._create_tmp_mount', mock_create_tmp_mount)
 @mock.patch('system.minijail._create_chroot_dir', mock_create_chroot_dir)
@@ -146,6 +163,7 @@ class LauncherTest(fake_fs_unittest.TestCase):
     os.environ['FUZZ_INPUTS_DISK'] = FUZZ_INPUTS_DISK
     os.environ['FUZZ_LOGS_BUCKET'] = 'fuzz-logs-bucket'
     os.environ['FUZZ_TEST_TIMEOUT'] = '4800'
+    os.environ['MUTATOR_PLUGINS_DIR'] = '/mutator-plugins'
     os.environ['GSUTIL_PATH'] = GSUTIL_PATH
     os.environ['JOB_NAME'] = 'job_name'
     os.environ['ROOT_DIR'] = FAKE_ROOT_DIR
@@ -165,6 +183,7 @@ class LauncherTest(fake_fs_unittest.TestCase):
     self.oom_output = _read_test_data('oom.txt')
     self.expected_oom_output = _read_test_data('oom_expected.txt')
     self.timeout_output = _read_test_data('timeout.txt')
+    self.oom_in_seed_corpus_output = _read_test_data('oom_in_seed_corpus.txt')
 
     self.options_data = _read_test_data('fake_fuzzer.options')
     self.dictionary_data = _read_test_data('fake_fuzzer.dict')
@@ -196,12 +215,9 @@ class LauncherTest(fake_fs_unittest.TestCase):
     test_helpers.patch(self, [
         'atexit.register',
         'base.utils.default_project_name',
-        'bot.fuzzers.engine_common.do_corpus_subset',
-        'bot.fuzzers.libFuzzer.launcher.do_ml_rnn_generator',
-        'bot.fuzzers.libFuzzer.launcher.do_radamsa_generator',
-        'bot.fuzzers.libFuzzer.launcher.do_random_max_length',
-        'bot.fuzzers.libFuzzer.launcher.do_recommended_dictionary',
-        'bot.fuzzers.libFuzzer.launcher.do_value_profile',
+        'bot.fuzzers.libFuzzer.strategy_selection.'
+        'generate_weighted_strategy_pool',
+        'bot.fuzzers.engine_common.decide_with_probability',
         'os.getpid',
     ])
 
@@ -213,17 +229,15 @@ class LauncherTest(fake_fs_unittest.TestCase):
     self.mock.default_project_name.return_value = 'default-proj'
     self.mock.getpid.return_value = 1337
 
-    self.mock.do_corpus_subset.return_value = False
-    self.mock.do_ml_rnn_generator.return_value = False
-    self.mock.do_radamsa_generator.return_value = False
-    self.mock.do_random_max_length.return_value = False
-    self.mock.do_recommended_dictionary.return_value = False
-    self.mock.do_value_profile.return_value = False
+    self.mock.generate_weighted_strategy_pool.return_value = set_strategy_pool(
+        [strategy.DATAFLOW_TRACING_STRATEGY])
+    self.mock.decide_with_probability.return_value = False
+    environment.set_value('STRATEGY_SELECTION_METHOD', 'default')
 
   @mock.patch('google_cloud_utils.storage.exists', lambda x: None)
   @mock.patch('google_cloud_utils.storage.read_data', lambda x: None)
   @mock.patch('google_cloud_utils.storage.write_data', lambda x, y: None)
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   def test_analyze_recommended_dictionary(self, mock_stdout):
     """Test analysis of recommended dictionary."""
     self.fs.CreateDirectory('/fake/inputs-disk/temp-1337')
@@ -251,7 +265,7 @@ class LauncherTest(fake_fs_unittest.TestCase):
       ])
       self.assertEqual(result, expected_dictionary)
 
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   @mock.patch('bot.fuzzers.libFuzzer.launcher.add_recommended_dictionary',
               lambda x, y, z: False)
   def test_basic_fuzz(self, mock_stdout):
@@ -287,9 +301,13 @@ class LauncherTest(fake_fs_unittest.TestCase):
           '-print_final_stats=1', '/fake/inputs-disk/temp-1337/new',
           '/fake/corpus_basic'
       ], [
-          '/fake/build_dir/fake_fuzzer', '-max_len=80', '-rss_limit_mb=2048',
-          '-timeout=25', '-merge=1', '/fake/corpus_basic',
-          '/fake/inputs-disk/temp-1337/new'
+          '/fake/build_dir/fake_fuzzer',
+          '-rss_limit_mb=2048',
+          '-timeout=25',
+          '-merge=1',
+          '/fake/inputs-disk/temp-1337/merge-corpus',
+          '/fake/inputs-disk/temp-1337/new',
+          '/fake/corpus_basic',
       ]])
 
       # Check new testcases added.
@@ -305,8 +323,7 @@ class LauncherTest(fake_fs_unittest.TestCase):
       stats_data = fuzzer_stats.TestcaseRun.read_from_disk(
           '/fake/testcase_basic')
       self.assertDictEqual(
-          stats_data.data,
-          {
+          stats_data.data, {
               'actual_duration':
                   0,
               'average_exec_per_sec':
@@ -328,7 +345,6 @@ class LauncherTest(fake_fs_unittest.TestCase):
                   0,
               'corpus_size':
                   11,
-              # No corpus_rss_mb due to corpus subset strategy.
               'dict_used':
                   1,
               'edge_coverage':
@@ -365,9 +381,9 @@ class LauncherTest(fake_fs_unittest.TestCase):
                   80,
               'merge_edge_coverage':
                   1769,
-              'merge_new_features':
+              'new_edges':
                   0,
-              'merge_new_files':
+              'new_features':
                   0,
               'new_units_added':
                   11,
@@ -389,16 +405,24 @@ class LauncherTest(fake_fs_unittest.TestCase):
                   0,
               'startup_crash_count':
                   0,
+              'strategy_dataflow_tracing':
+                  0,
               'strategy_corpus_mutations_radamsa':
                   1,
               'strategy_corpus_mutations_ml_rnn':
                   0,
               'strategy_corpus_subset':
                   50,
+              'strategy_fork':
+                  1,
+              'strategy_mutator_plugin':
+                  1,
               'strategy_random_max_len':
                   1,
               'strategy_recommended_dict':
                   0,
+              'strategy_selection_method':
+                  'default',
               'strategy_value_profile':
                   0,
               'timeout_count':
@@ -429,10 +453,11 @@ class LauncherTest(fake_fs_unittest.TestCase):
 
   @mock.patch('bot.fuzzers.libFuzzer.launcher.add_recommended_dictionary',
               lambda x, y, z: True)
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   def test_basic_fuzz_with_custom_options(self, mock_stdout):
     """Test a basic fuzzing run with custom options provided."""
-    self.mock.do_recommended_dictionary.return_value = True
+    self.mock.generate_weighted_strategy_pool.return_value = set_strategy_pool(
+        [strategy.RECOMMENDED_DICTIONARY_STRATEGY])
 
     self.fs.CreateDirectory('/fake/corpus_basic')
     self.fs.CreateFile('/fake/testcase_basic')
@@ -478,14 +503,13 @@ class LauncherTest(fake_fs_unittest.TestCase):
           '/fake/corpus_basic',
       ], [
           '/fake/build_dir/fake_fuzzer',
-          '-max_len=80',
           '-timeout=33',
           '-only_ascii=1',
           '-rss_limit_mb=2048',
-          '-dict=/fake/build_dir/fake_fuzzer.dict',
           '-merge=1',
-          '/fake/corpus_basic',
+          '/fake/inputs-disk/temp-1337/merge-corpus',
           '/fake/inputs-disk/temp-1337/new',
+          '/fake/corpus_basic',
       ]])
 
       # Check new testcases added.
@@ -522,8 +546,6 @@ class LauncherTest(fake_fs_unittest.TestCase):
                   0,
               'corpus_size':
                   11,
-              'corpus_rss_mb':
-                  56,
               'crash_count':
                   0,
               'dict_used':
@@ -562,9 +584,9 @@ class LauncherTest(fake_fs_unittest.TestCase):
                   80,
               'merge_edge_coverage':
                   1769,
-              'merge_new_features':
+              'new_edges':
                   0,
-              'merge_new_files':
+              'new_features':
                   0,
               'new_units_added':
                   11,
@@ -584,6 +606,8 @@ class LauncherTest(fake_fs_unittest.TestCase):
                   0,
               'slowest_unit_time_sec':
                   0,
+              'strategy_dataflow_tracing':
+                  0,
               'startup_crash_count':
                   0,
               'strategy_corpus_mutations_radamsa':
@@ -592,10 +616,16 @@ class LauncherTest(fake_fs_unittest.TestCase):
                   0,
               'strategy_corpus_subset':
                   0,
+              'strategy_fork':
+                  0,
+              'strategy_mutator_plugin':
+                  0,
               'strategy_random_max_len':
                   0,
               'strategy_recommended_dict':
                   1,
+              'strategy_selection_method':
+                  'default',
               'strategy_value_profile':
                   0,
               'timeout_count':
@@ -651,7 +681,6 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'corpus_crash_count': 0,
         'crash_count': 0,
         'corpus_size': 0,
-        # No corpus_rss_mb due to corpus subset strategy.
         'dict_used': 1,
         'edge_coverage': 1769,
         'edges_total': 398408,
@@ -665,8 +694,8 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'manual_dict_size': 0,
         'max_len': 741802,
         'merge_edge_coverage': 0,
-        'merge_new_features': 0,
-        'merge_new_files': 0,
+        'new_edges': 0,
+        'new_features': 0,
         'new_units_added': 55,
         'new_units_generated': 55,
         'number_of_executed_units': 258724,
@@ -677,11 +706,15 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'slow_units_count': 0,
         'slowest_unit_time_sec': 0,
         'startup_crash_count': 0,
+        'strategy_dataflow_tracing': 0,
         'strategy_corpus_mutations_radamsa': 1,
         'strategy_corpus_mutations_ml_rnn': 0,
         'strategy_corpus_subset': 50,
+        'strategy_fork': 1,
+        'strategy_mutator_plugin': 1,
         'strategy_random_max_len': 1,
         'strategy_recommended_dict': 0,
+        'strategy_selection_method': 'default',
         'strategy_value_profile': 0,
         'timeout_count': 0
     }
@@ -699,7 +732,6 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'average_exec_per_sec': 21,
         'bad_instrumentation': 0,
         'corpus_crash_count': 0,
-        'corpus_rss_mb': 56,
         'corpus_size': 0,
         'crash_count': 1,
         'dict_used': 1,
@@ -715,8 +747,8 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'manual_dict_size': 0,
         'max_len': 1337,
         'merge_edge_coverage': 0,
-        'merge_new_features': 0,
-        'merge_new_files': 0,
+        'new_edges': 0,
+        'new_features': 0,
         'new_units_added': 0,
         'new_units_generated': 0,
         'number_of_executed_units': 1249,
@@ -727,11 +759,15 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'slow_units_count': 0,
         'slowest_unit_time_sec': 0,
         'startup_crash_count': 0,
+        'strategy_dataflow_tracing': 0,
         'strategy_corpus_mutations_radamsa': 0,
         'strategy_corpus_mutations_ml_rnn': 0,
         'strategy_corpus_subset': 0,
+        'strategy_fork': 0,
+        'strategy_mutator_plugin': 0,
         'strategy_random_max_len': 0,
         'strategy_recommended_dict': 0,
+        'strategy_selection_method': 'default',
         'strategy_value_profile': 0,
         'timeout_count': 0
     }
@@ -748,7 +784,6 @@ class LauncherTest(fake_fs_unittest.TestCase):
     expected_stats = {
         'bad_instrumentation': 0,
         'corpus_crash_count': 0,
-        'corpus_rss_mb': 0,
         'corpus_size': 0,
         'crash_count': 0,
         'dict_used': 0,
@@ -764,18 +799,22 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'manual_dict_size': 0,
         'max_len': 1337,
         'merge_edge_coverage': 0,
-        'merge_new_features': 0,
-        'merge_new_files': 0,
+        'new_edges': 0,
+        'new_features': 0,
         'oom_count': 0,
         'recommended_dict_size': 0,
         'slow_unit_count': 0,
         'slow_units_count': 0,
         'startup_crash_count': 1,
+        'strategy_dataflow_tracing': 0,
         'strategy_corpus_mutations_radamsa': 0,
         'strategy_corpus_mutations_ml_rnn': 0,
         'strategy_corpus_subset': 0,
+        'strategy_fork': 0,
+        'strategy_mutator_plugin': 0,
         'strategy_random_max_len': 0,
         'strategy_recommended_dict': 0,
+        'strategy_selection_method': 'default',
         'strategy_value_profile': 0,
         'timeout_count': 0
     }
@@ -792,7 +831,6 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'average_exec_per_sec': 0,
         'bad_instrumentation': 0,
         'corpus_crash_count': 1,
-        'corpus_rss_mb': 109,
         'corpus_size': 0,
         'crash_count': 1,
         'dict_used': 0,
@@ -808,8 +846,8 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'manual_dict_size': 0,
         'max_len': 4096,
         'merge_edge_coverage': 0,
-        'merge_new_features': 0,
-        'merge_new_files': 0,
+        'new_edges': 0,
+        'new_features': 0,
         'new_units_added': 0,
         'new_units_generated': 0,
         'number_of_executed_units': 2,
@@ -820,11 +858,15 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'slow_units_count': 0,
         'slowest_unit_time_sec': 0,
         'startup_crash_count': 0,
+        'strategy_dataflow_tracing': 0,
         'strategy_corpus_mutations_radamsa': 0,
         'strategy_corpus_mutations_ml_rnn': 0,
         'strategy_corpus_subset': 0,
+        'strategy_fork': 0,
+        'strategy_mutator_plugin': 0,
         'strategy_random_max_len': 0,
         'strategy_recommended_dict': 0,
+        'strategy_selection_method': 'default',
         'strategy_value_profile': 0,
         'timeout_count': 0
     }
@@ -856,8 +898,8 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'manual_dict_size': 0,
         'max_len': 4096,
         'merge_edge_coverage': 0,
-        'merge_new_features': 0,
-        'merge_new_files': 0,
+        'new_edges': 0,
+        'new_features': 0,
         'new_units_added': 0,
         'new_units_generated': 0,
         'number_of_executed_units': 2,
@@ -868,11 +910,15 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'slow_units_count': 0,
         'slowest_unit_time_sec': 0,
         'startup_crash_count': 0,
+        'strategy_dataflow_tracing': 0,
         'strategy_corpus_mutations_radamsa': 0,
         'strategy_corpus_mutations_ml_rnn': 0,
         'strategy_corpus_subset': 1,
+        'strategy_fork': 0,
+        'strategy_mutator_plugin': 0,
         'strategy_random_max_len': 0,
         'strategy_recommended_dict': 0,
+        'strategy_selection_method': 'default',
         'strategy_value_profile': 0,
         'timeout_count': 0
     }
@@ -889,7 +935,6 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'average_exec_per_sec': 53,
         'bad_instrumentation': 0,
         'corpus_crash_count': 0,
-        'corpus_rss_mb': 58,
         'corpus_size': 0,
         'crash_count': 0,
         'dict_used': 1,
@@ -905,8 +950,8 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'manual_dict_size': 0,
         'max_len': 0,
         'merge_edge_coverage': 0,
-        'merge_new_features': 0,
-        'merge_new_files': 0,
+        'new_edges': 128,
+        'new_features': 2080,
         'new_units_added': 1513,
         'new_units_generated': 1513,
         'number_of_executed_units': 90667,
@@ -917,12 +962,68 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'slow_units_count': 0,
         'slowest_unit_time_sec': 0,
         'startup_crash_count': 0,
+        'strategy_dataflow_tracing': 0,
         'strategy_corpus_mutations_radamsa': 0,
         'strategy_corpus_mutations_ml_rnn': 0,
         'strategy_corpus_subset': 0,
+        'strategy_fork': 0,
+        'strategy_mutator_plugin': 0,
         'strategy_random_max_len': 0,
         'strategy_recommended_dict': 0,
+        'strategy_selection_method': 'default',
         'strategy_value_profile': 0,
+        'timeout_count': 0
+    }
+
+    self.assertEqual(parsed_stats, expected_stats)
+
+  def test_parse_log_and_stats_oom_in_seed_corpus(self):
+    """Test stats parsing and additional performance features extraction
+    without applying of stat_overrides."""
+    log_lines = self.oom_in_seed_corpus_output.splitlines()
+    parsed_stats = launcher.parse_log_stats(log_lines)
+    parsed_stats.update(stats.parse_performance_features(log_lines, [], []))
+    expected_stats = {
+        'average_exec_per_sec': 74,
+        'bad_instrumentation': 0,
+        'corpus_crash_count': 0,
+        'corpus_size': 0,
+        'crash_count': 0,
+        'dict_used': 1,
+        'edge_coverage': 3912,
+        'edges_total': 10186501,
+        'feature_coverage': 31745,
+        'initial_edge_coverage': 3912,
+        'initial_feature_coverage': 31745,
+        'leak_count': 0,
+        'log_lines_from_engine': 1,
+        'log_lines_ignored': 124,
+        'log_lines_unwanted': 0,
+        'manual_dict_size': 0,
+        'max_len': 1048575,
+        'merge_edge_coverage': 0,
+        'new_edges': 0,
+        'new_features': 0,
+        'new_units_added': 0,
+        'new_units_generated': 0,
+        'number_of_executed_units': 19380,
+        'oom_count': 1,
+        'peak_rss_mb': 2053,
+        'recommended_dict_size': 0,
+        'slow_unit_count': 0,
+        'slow_units_count': 0,
+        'slowest_unit_time_sec': 0,
+        'startup_crash_count': 0,
+        'strategy_dataflow_tracing': 0,
+        'strategy_corpus_mutations_radamsa': 0,
+        'strategy_corpus_mutations_ml_rnn': 1,
+        'strategy_corpus_subset': 0,
+        'strategy_fork': 0,
+        'strategy_mutator_plugin': 0,
+        'strategy_random_max_len': 0,
+        'strategy_recommended_dict': 0,
+        'strategy_selection_method': 'default',
+        'strategy_value_profile': 1,
         'timeout_count': 0
     }
 
@@ -937,13 +1038,12 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'average_exec_per_sec': 40,
         'bad_instrumentation': 0,
         'corpus_crash_count': 1,
-        'corpus_rss_mb': 93,
         'corpus_size': 0,
         'crash_count': 0,
         'dict_used': 0,
-        'edge_coverage': 7736,
+        'edge_coverage': 0,
         'edges_total': 685270,
-        'feature_coverage': 12666,
+        'feature_coverage': 0,
         'initial_edge_coverage': 0,
         'initial_feature_coverage': 0,
         'leak_count': 0,
@@ -953,8 +1053,8 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'manual_dict_size': 0,
         'max_len': 1048576,
         'merge_edge_coverage': 0,
-        'merge_new_features': 0,
-        'merge_new_files': 0,
+        'new_edges': 0,
+        'new_features': 0,
         'new_units_added': 0,
         'new_units_generated': 0,
         'number_of_executed_units': 1142,
@@ -965,11 +1065,15 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'slow_units_count': 0,
         'slowest_unit_time_sec': 0,
         'startup_crash_count': 0,
+        'strategy_dataflow_tracing': 0,
         'strategy_corpus_mutations_radamsa': 0,
         'strategy_corpus_mutations_ml_rnn': 0,
         'strategy_corpus_subset': 0,
+        'strategy_fork': 0,
+        'strategy_mutator_plugin': 0,
         'strategy_random_max_len': 0,
         'strategy_recommended_dict': 0,
+        'strategy_selection_method': 'default',
         'strategy_value_profile': 0,
         'timeout_count': 0
     }
@@ -986,13 +1090,12 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'average_exec_per_sec': 16,
         'bad_instrumentation': 0,
         'corpus_crash_count': 1,
-        'corpus_rss_mb': 103,
         'corpus_size': 0,
         'crash_count': 0,
         'dict_used': 0,
-        'edge_coverage': 1321,
+        'edge_coverage': 0,
         'edges_total': 52747,
-        'feature_coverage': 6306,
+        'feature_coverage': 0,
         'initial_edge_coverage': 0,
         'initial_feature_coverage': 0,
         'leak_count': 0,
@@ -1002,8 +1105,8 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'manual_dict_size': 0,
         'max_len': 978798,
         'merge_edge_coverage': 0,
-        'merge_new_features': 0,
-        'merge_new_files': 0,
+        'new_edges': 0,
+        'new_features': 0,
         'new_units_added': 0,
         'new_units_generated': 0,
         'number_of_executed_units': 5769,
@@ -1014,18 +1117,22 @@ class LauncherTest(fake_fs_unittest.TestCase):
         'slow_units_count': 4,
         'slowest_unit_time_sec': 19,
         'startup_crash_count': 0,
+        'strategy_dataflow_tracing': 0,
         'strategy_corpus_mutations_radamsa': 1,
         'strategy_corpus_mutations_ml_rnn': 0,
         'strategy_corpus_subset': 0,
+        'strategy_fork': 0,
+        'strategy_mutator_plugin': 0,
         'strategy_random_max_len': 0,
         'strategy_recommended_dict': 0,
+        'strategy_selection_method': 'default',
         'strategy_value_profile': 0,
         'timeout_count': 1
     }
 
     self.assertEqual(parsed_stats, expected_stats)
 
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   def test_single_input(self, mock_stdout):
     """Tests a run for a single input."""
     self.fs.CreateFile('/fake/testcase', contents='fake')
@@ -1048,7 +1155,7 @@ class LauncherTest(fake_fs_unittest.TestCase):
       # Output should be printed.
       self.assertIn('OUTPUT', mock_stdout.getvalue())
 
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   def test_single_input_with_custom_options(self, mock_stdout):
     """Tests a run for a single input with custom options."""
     self.fs.CreateFile('/fake/testcase', contents='fake')
@@ -1070,11 +1177,12 @@ class LauncherTest(fake_fs_unittest.TestCase):
       ]])
 
       # Output should be printed.
+      mock_stdout.flush()
       self.assertIn('OUTPUT', mock_stdout.getvalue())
 
   @mock.patch('bot.fuzzers.libFuzzer.launcher.add_recommended_dictionary',
               lambda x, y, z: False)
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   def test_fuzz_crash(self, mock_stdout):
     """Tests a fuzzing run with a crash found."""
     self.fs.CreateFile('/fake/testcase_crash')
@@ -1112,7 +1220,7 @@ class LauncherTest(fake_fs_unittest.TestCase):
           '/fake/corpus_crash'
       ]])
 
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   def test_oom_crash(self, mock_stdout):
     """Tests a fuzzing run with a OOM."""
     self.fs.CreateFile('/fake/testcase_oom')
@@ -1122,8 +1230,11 @@ class LauncherTest(fake_fs_unittest.TestCase):
     self.fs.CreateDirectory('/fake/corpus_oom')
     os.environ['FUZZ_CORPUS_DIR'] = '/fake/corpus_oom'
 
-    with mock.patch('subprocess.Popen',
-                    create_mock_popen(self.oom_output)) as mock_popen:
+    new_units_added = 11
+    with mock.patch(
+        'subprocess.Popen',
+        create_mock_popen(self.oom_output, '/fake/inputs-disk/temp-1337/new',
+                          None, new_units_added)) as mock_popen:
       launcher.main([
           'launcher.py',
           '/fake/testcase_oom',
@@ -1152,8 +1263,6 @@ class LauncherTest(fake_fs_unittest.TestCase):
               ],
               'corpus_crash_count':
                   0,
-              'corpus_rss_mb':
-                  58,
               'corpus_size':
                   0,
               'crash_count':
@@ -1194,10 +1303,10 @@ class LauncherTest(fake_fs_unittest.TestCase):
                   80,
               'merge_edge_coverage':
                   2367,
-              'merge_new_features':
-                  0,
-              'merge_new_files':
-                  0,
+              'new_edges':
+                  128,
+              'new_features':
+                  2080,
               'new_units_added':
                   0,
               'new_units_generated':
@@ -1218,16 +1327,24 @@ class LauncherTest(fake_fs_unittest.TestCase):
                   0,
               'startup_crash_count':
                   0,
+              'strategy_dataflow_tracing':
+                  0,
               'strategy_corpus_mutations_radamsa':
                   0,
               'strategy_corpus_mutations_ml_rnn':
                   0,
               'strategy_corpus_subset':
                   0,
+              'strategy_fork':
+                  0,
+              'strategy_mutator_plugin':
+                  0,
               'strategy_random_max_len':
                   0,
               'strategy_recommended_dict':
                   0,
+              'strategy_selection_method':
+                  'default',
               'strategy_value_profile':
                   0,
               'timeout_count':
@@ -1252,17 +1369,18 @@ class LauncherTest(fake_fs_unittest.TestCase):
           '-print_final_stats=1', '/fake/inputs-disk/temp-1337/new',
           '/fake/corpus_oom'
       ], [
-          '/fake/build_dir/fake_fuzzer', '-max_len=80', '-rss_limit_mb=2048',
-          '-timeout=25', '-merge=1', '/fake/corpus_oom',
-          '/fake/inputs-disk/temp-1337/new'
+          '/fake/build_dir/fake_fuzzer', '-rss_limit_mb=2048', '-timeout=25',
+          '-merge=1', '/fake/inputs-disk/temp-1337/merge-corpus',
+          '/fake/inputs-disk/temp-1337/new', '/fake/corpus_oom'
       ]])
 
   @mock.patch('bot.fuzzers.libFuzzer.launcher.add_recommended_dictionary',
               lambda x, y, z: False)
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   def test_fuzz_from_subset(self, _):
     """Tests fuzzing with corpus subset."""
-    self.mock.do_corpus_subset.return_value = True
+    self.mock.generate_weighted_strategy_pool.return_value = set_strategy_pool(
+        [strategy.CORPUS_SUBSET_STRATEGY])
 
     self.fs.CreateFile('/fake/testcase_subset')
     self.fs.CreateDirectory('/fake/main_corpus_dir')
@@ -1272,13 +1390,17 @@ class LauncherTest(fake_fs_unittest.TestCase):
     self.fs.CreateDirectory('/fake/main_corpus_dir/sub')
 
     # To use corpus subset, there should be enough files in the main corpus.
-    for i in xrange(1 + max(strategy.CORPUS_SUBSET_NUM_TESTCASES)):
+    for i in range(1 + max(strategy.CORPUS_SUBSET_NUM_TESTCASES)):
       self.fs.CreateFile('/fake/main_corpus_dir/sub/%d' % i)
 
     os.environ['FUZZ_CORPUS_DIR'] = '/fake/main_corpus_dir'
 
-    with mock.patch('subprocess.Popen',
-                    create_mock_popen(self.no_crash_output)) as mock_popen:
+    new_units_added = 11
+    with mock.patch(
+        'subprocess.Popen',
+        create_mock_popen(
+            self.no_crash_output, '/fake/inputs-disk/temp-1337/new',
+            '/fake/main_corpus_dir', new_units_added)) as mock_popen:
       launcher.main([
           'launcher.py',
           '/fake/testcase_subset',
@@ -1292,10 +1414,14 @@ class LauncherTest(fake_fs_unittest.TestCase):
           '-print_final_stats=1', '/fake/inputs-disk/temp-1337/new',
           '/fake/inputs-disk/temp-1337/subset'
       ], [
-          '/fake/build_dir/fake_fuzzer', '-max_len=80', '-rss_limit_mb=2048',
-          '-timeout=25', '-merge=1', '/fake/main_corpus_dir',
+          '/fake/build_dir/fake_fuzzer',
+          '-rss_limit_mb=2048',
+          '-timeout=25',
+          '-merge=1',
+          '/fake/inputs-disk/temp-1337/merge-corpus',
           '/fake/inputs-disk/temp-1337/new',
-          '/fake/inputs-disk/temp-1337/subset'
+          '/fake/inputs-disk/temp-1337/subset',
+          '/fake/main_corpus_dir',
       ]])
 
   @mock.patch('metrics.logs.log_error')
@@ -1332,18 +1458,23 @@ class LauncherTest(fake_fs_unittest.TestCase):
 
   @mock.patch('bot.fuzzers.libFuzzer.launcher.add_recommended_dictionary',
               lambda x, y, z: False)
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   def test_fuzz_from_subset_without_enough_corpus(self, _):
     """Tests fuzzing with corpus subset without enough files in the corpus."""
-    self.mock.do_corpus_subset.return_value = True
+    self.mock.generate_weighted_strategy_pool.return_value = set_strategy_pool(
+        [strategy.CORPUS_SUBSET_STRATEGY])
 
     self.fs.CreateFile('/fake/testcase_subset')
     self.fs.CreateDirectory('/fake/main_corpus_dir')
     os.environ['FUZZ_CORPUS_DIR'] = '/fake/main_corpus_dir'
     # Main corpus directory is empty, we should fall back to regular fuzzing.
 
-    with mock.patch('subprocess.Popen',
-                    create_mock_popen(self.no_crash_output)) as mock_popen:
+    new_units_added = 11
+    with mock.patch(
+        'subprocess.Popen',
+        create_mock_popen(
+            self.no_crash_output, '/fake/inputs-disk/temp-1337/new',
+            '/fake/main_corpus_dir', new_units_added)) as mock_popen:
       launcher.main([
           'launcher.py',
           '/fake/testcase_subset',
@@ -1357,18 +1488,23 @@ class LauncherTest(fake_fs_unittest.TestCase):
           '-print_final_stats=1', '/fake/inputs-disk/temp-1337/new',
           '/fake/main_corpus_dir'
       ], [
-          '/fake/build_dir/fake_fuzzer', '-max_len=80', '-rss_limit_mb=2048',
-          '-timeout=25', '-merge=1', '/fake/main_corpus_dir',
-          '/fake/inputs-disk/temp-1337/new'
+          '/fake/build_dir/fake_fuzzer',
+          '-rss_limit_mb=2048',
+          '-timeout=25',
+          '-merge=1',
+          '/fake/inputs-disk/temp-1337/merge-corpus',
+          '/fake/inputs-disk/temp-1337/new',
+          '/fake/main_corpus_dir',
       ]])
 
   @mock.patch('bot.fuzzers.libFuzzer.launcher.add_recommended_dictionary',
               lambda x, y, z: False)
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   @mock.patch('system.minijail.tempfile.NamedTemporaryFile')
   def test_fuzz_from_subset_minijail(self, mock_tempfile, _):
     """Tests fuzzing with corpus subset."""
-    self.mock.do_corpus_subset.return_value = True
+    self.mock.generate_weighted_strategy_pool.return_value = set_strategy_pool(
+        [strategy.CORPUS_SUBSET_STRATEGY])
     os.environ['USE_MINIJAIL'] = 'True'
 
     mock_tempfile.return_value.__enter__.return_value.name = '/tmppath'
@@ -1383,11 +1519,15 @@ class LauncherTest(fake_fs_unittest.TestCase):
     self.fs.CreateDirectory('/fake/main_corpus_dir/sub')
 
     # To use corpus subset, there should be enough files in the main corpus.
-    for i in xrange(1 + max(strategy.CORPUS_SUBSET_NUM_TESTCASES)):
+    for i in range(1 + max(strategy.CORPUS_SUBSET_NUM_TESTCASES)):
       self.fs.CreateFile('/fake/main_corpus_dir/sub/%d' % i)
 
-    with mock.patch('subprocess.Popen',
-                    create_mock_popen(self.no_crash_output)) as mock_popen:
+    new_units_added = 11
+    with mock.patch(
+        'subprocess.Popen',
+        create_mock_popen(
+            self.no_crash_output, '/fake/inputs-disk/temp-1337/new',
+            '/fake/main_corpus_dir', new_units_added)) as mock_popen:
       launcher.main([
           'launcher.py',
           '/fake/testcase_subset',
@@ -1434,29 +1574,64 @@ class LauncherTest(fake_fs_unittest.TestCase):
           '-print_final_stats=1', '/new', '/subset'
       ], [
           '/fake_root/resources/platform/{}/minijail0'.format(
-              environment.platform().lower()), '-f', '/tmpfile', '-U', '-m',
-          '0 1000 1', '-T', 'static', '-c', '0', '-n', '-v', '-p', '-l', '-I',
-          '-k', 'proc,/proc,proc,1', '-P', '/fake/inputs-disk/temp-1337/CHROOT',
-          '-b', '/fake/inputs-disk/temp-1337/TEMP,/tmp,1', '-b', '/lib,/lib,0',
-          '-b', '/lib64,/lib64,0', '-b', '/usr/lib,/usr/lib,0', '-b',
-          '/fake/build_dir,/fake/build_dir,0', '-b', '/fake/build_dir,/out,0',
-          '-b', '/fake/main_corpus_dir,/main_corpus_dir,1', '-b',
-          '/fake/inputs-disk/temp-1337/new,/new,1', '-b',
+              environment.platform().lower()),
+          '-f',
+          '/tmpfile',
+          '-U',
+          '-m',
+          '0 1000 1',
+          '-T',
+          'static',
+          '-c',
+          '0',
+          '-n',
+          '-v',
+          '-p',
+          '-l',
+          '-I',
+          '-k',
+          'proc,/proc,proc,1',
+          '-P',
+          '/fake/inputs-disk/temp-1337/CHROOT',
+          '-b',
+          '/fake/inputs-disk/temp-1337/TEMP,/tmp,1',
+          '-b',
+          '/lib,/lib,0',
+          '-b',
+          '/lib64,/lib64,0',
+          '-b',
+          '/usr/lib,/usr/lib,0',
+          '-b',
+          '/fake/build_dir,/fake/build_dir,0',
+          '-b',
+          '/fake/build_dir,/out,0',
+          '-b',
+          '/fake/main_corpus_dir,/main_corpus_dir,1',
+          '-b',
+          '/fake/inputs-disk/temp-1337/new,/new,1',
+          '-b',
           '/fake/inputs-disk/temp-1337/subset,/subset,1',
-          '/fake/build_dir/fake_fuzzer', '-max_len=80', '-rss_limit_mb=2048',
-          '-timeout=25', '-merge=1', '/main_corpus_dir', '/new', '/subset'
+          '-b',
+          '/fake/inputs-disk/temp-1337/merge-corpus,/merge-corpus,1',
+          '/fake/build_dir/fake_fuzzer',
+          '-rss_limit_mb=2048',
+          '-timeout=25',
+          '-merge=1',
+          '/merge-corpus',
+          '/new',
+          '/subset',
+          '/main_corpus_dir',
       ]])
-
-    del os.environ['USE_MINIJAIL']
 
   @mock.patch('bot.fuzzers.libFuzzer.launcher.add_recommended_dictionary',
               lambda x, y, z: False)
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   @mock.patch('system.minijail.tempfile.NamedTemporaryFile')
   def test_fuzz_from_subset_without_enough_corpus_minijail(
       self, mock_tempfile, _):
     """Tests fuzzing with corpus subset without enough files in the corpus."""
-    self.mock.do_corpus_subset.return_value = True
+    self.mock.generate_weighted_strategy_pool.return_value = set_strategy_pool(
+        [strategy.CORPUS_SUBSET_STRATEGY])
     os.environ['USE_MINIJAIL'] = 'True'
 
     mock_tempfile.return_value.__enter__.return_value.name = '/tmppath'
@@ -1468,8 +1643,12 @@ class LauncherTest(fake_fs_unittest.TestCase):
     self.fs.CreateDirectory('/fake/main_corpus_dir')
     os.environ['FUZZ_CORPUS_DIR'] = '/fake/main_corpus_dir'
 
-    with mock.patch('subprocess.Popen',
-                    create_mock_popen(self.no_crash_output)) as mock_popen:
+    new_units_added = 11
+    with mock.patch(
+        'subprocess.Popen',
+        create_mock_popen(
+            self.no_crash_output, '/fake/inputs-disk/temp-1337/new',
+            '/fake/main_corpus_dir', new_units_added)) as mock_popen:
       launcher.main([
           'launcher.py',
           '/fake/testcase_subset',
@@ -1515,35 +1694,72 @@ class LauncherTest(fake_fs_unittest.TestCase):
           '-print_final_stats=1', '/new', '/main_corpus_dir'
       ], [
           '/fake_root/resources/platform/{}/minijail0'.format(
-              environment.platform().lower()), '-f', '/tmpfile', '-U', '-m',
-          '0 1000 1', '-T', 'static', '-c', '0', '-n', '-v', '-p', '-l', '-I',
-          '-k', 'proc,/proc,proc,1', '-P', '/fake/inputs-disk/temp-1337/CHROOT',
-          '-b', '/fake/inputs-disk/temp-1337/TEMP,/tmp,1', '-b', '/lib,/lib,0',
-          '-b', '/lib64,/lib64,0', '-b', '/usr/lib,/usr/lib,0', '-b',
-          '/fake/build_dir,/fake/build_dir,0', '-b', '/fake/build_dir,/out,0',
-          '-b', '/fake/inputs-disk/temp-1337/new,/new,1', '-b',
+              environment.platform().lower()),
+          '-f',
+          '/tmpfile',
+          '-U',
+          '-m',
+          '0 1000 1',
+          '-T',
+          'static',
+          '-c',
+          '0',
+          '-n',
+          '-v',
+          '-p',
+          '-l',
+          '-I',
+          '-k',
+          'proc,/proc,proc,1',
+          '-P',
+          '/fake/inputs-disk/temp-1337/CHROOT',
+          '-b',
+          '/fake/inputs-disk/temp-1337/TEMP,/tmp,1',
+          '-b',
+          '/lib,/lib,0',
+          '-b',
+          '/lib64,/lib64,0',
+          '-b',
+          '/usr/lib,/usr/lib,0',
+          '-b',
+          '/fake/build_dir,/fake/build_dir,0',
+          '-b',
+          '/fake/build_dir,/out,0',
+          '-b',
+          '/fake/inputs-disk/temp-1337/new,/new,1',
+          '-b',
           '/fake/main_corpus_dir,/main_corpus_dir,1',
-          '/fake/build_dir/fake_fuzzer', '-max_len=80', '-rss_limit_mb=2048',
-          '-timeout=25', '-merge=1', '/main_corpus_dir', '/new'
+          '-b',
+          '/fake/inputs-disk/temp-1337/merge-corpus,/merge-corpus,1',
+          '/fake/build_dir/fake_fuzzer',
+          '-rss_limit_mb=2048',
+          '-timeout=25',
+          '-merge=1',
+          '/merge-corpus',
+          '/new',
+          '/main_corpus_dir',
       ]])
-
-    del os.environ['USE_MINIJAIL']
 
   @mock.patch('bot.fuzzers.libFuzzer.launcher.add_recommended_dictionary',
               lambda x, y, z: False)
   @mock.patch('bot.fuzzers.libFuzzer.launcher.'
               'generate_new_testcase_mutations_using_radamsa')
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   def test_fuzz_with_mutations_using_radamsa(self, *_):
     """Tests fuzzing with mutations using radamsa."""
-    self.mock.do_radamsa_generator.return_value = True
+    self.mock.generate_weighted_strategy_pool.return_value = set_strategy_pool(
+        [strategy.CORPUS_MUTATION_RADAMSA_STRATEGY])
 
     self.fs.CreateFile('/fake/testcase_mutations')
     self.fs.CreateDirectory('/fake/corpus_mutations')
     os.environ['FUZZ_CORPUS_DIR'] = '/fake/corpus_mutations'
 
-    with mock.patch('subprocess.Popen',
-                    create_mock_popen(self.no_crash_output)) as mock_popen:
+    new_units_added = 11
+    with mock.patch(
+        'subprocess.Popen',
+        create_mock_popen(
+            self.no_crash_output, '/fake/inputs-disk/temp-1337/new',
+            '/fake/corpus_mutations', new_units_added)) as mock_popen:
       launcher.main([
           'launcher.py',
           '/fake/testcase_mutations',
@@ -1564,29 +1780,34 @@ class LauncherTest(fake_fs_unittest.TestCase):
           '/fake/inputs-disk/temp-1337/mutations',
       ], [
           '/fake/build_dir/fake_fuzzer',
-          '-max_len=80',
           '-rss_limit_mb=2048',
           '-timeout=25',
           '-merge=1',
-          '/fake/corpus_mutations',
+          '/fake/inputs-disk/temp-1337/merge-corpus',
           '/fake/inputs-disk/temp-1337/new',
+          '/fake/corpus_mutations',
           '/fake/inputs-disk/temp-1337/mutations',
       ]])
 
   @mock.patch('bot.fuzzers.libFuzzer.launcher.add_recommended_dictionary',
               lambda x, y, z: False)
-  @mock.patch('sys.stdout', new_callable=StringIO)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
   @mock.patch('bot.fuzzers.ml.rnn.generator.execute')
   def test_fuzz_with_mutations_using_ml_rnn(self, mock_execute, *_):
     """Tests fuzzing with mutations using ml rnn."""
-    self.mock.do_ml_rnn_generator.return_value = True
+    self.mock.generate_weighted_strategy_pool.return_value = set_strategy_pool(
+        [strategy.CORPUS_MUTATION_ML_RNN_STRATEGY])
 
     self.fs.CreateFile('/fake/testcase_mutations')
     self.fs.CreateDirectory('/fake/corpus_mutations')
     os.environ['FUZZ_CORPUS_DIR'] = '/fake/corpus_mutations'
 
-    with mock.patch('subprocess.Popen',
-                    create_mock_popen(self.no_crash_output)) as mock_popen:
+    new_units_added = 11
+    with mock.patch(
+        'subprocess.Popen',
+        create_mock_popen(
+            self.no_crash_output, '/fake/inputs-disk/temp-1337/new',
+            '/fake/corpus_mutations', new_units_added)) as mock_popen:
       launcher.main([
           'launcher.py',
           '/fake/testcase_mutations',
@@ -1610,14 +1831,529 @@ class LauncherTest(fake_fs_unittest.TestCase):
           '/fake/inputs-disk/temp-1337/mutations',
       ], [
           '/fake/build_dir/fake_fuzzer',
-          '-max_len=80',
           '-rss_limit_mb=2048',
           '-timeout=25',
           '-merge=1',
-          '/fake/corpus_mutations',
+          '/fake/inputs-disk/temp-1337/merge-corpus',
           '/fake/inputs-disk/temp-1337/new',
+          '/fake/corpus_mutations',
           '/fake/inputs-disk/temp-1337/mutations',
       ]])
+
+  def _dataflow_tracing_test_setup(self):
+    """Common setup for the tests checking dataflow tracing strategy support."""
+    self.mock.generate_weighted_strategy_pool.return_value = set_strategy_pool(
+        [strategy.DATAFLOW_TRACING_STRATEGY])
+
+    self.fs.CreateDirectory('/fake/corpus_dir')
+    self.fs.CreateFile('/fake/testcase_basic')
+    self.fs.CreateFile('/fake/dfsan_build/fake_fuzzer')
+
+    os.environ['FUZZ_CORPUS_DIR'] = '/fake/corpus_dir'
+    os.environ['DATAFLOW_BUILD_DIR'] = '/fake/dfsan_build'
+
+  @mock.patch('bot.fuzzers.libFuzzer.launcher.add_recommended_dictionary',
+              lambda x, y, z: False)
+  @mock.patch('multiprocessing.cpu_count', return_value=1)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
+  def test_fuzz_with_dataflow_tracing(self, mock_stdout, *_):
+    """Tests fuzzing with dataflow tracing."""
+    self._dataflow_tracing_test_setup()
+    new_units_added = 11
+    with mock.patch(
+        'subprocess.Popen',
+        create_mock_popen(self.no_crash_output,
+                          '/fake/inputs-disk/temp-1337/new', '/fake/corpus_dir',
+                          new_units_added)) as mock_popen:
+      launcher.main([
+          'launcher.py',
+          '/fake/testcase_basic',
+          'fake_fuzzer',
+          '-max_len=80',
+      ])
+
+      self.assertEqual(mock_popen.commands, [[
+          '/fake/build_dir/fake_fuzzer', '-max_len=80', '-rss_limit_mb=2048',
+          '-timeout=25', '-collect_data_flow=/fake/dfsan_build/fake_fuzzer',
+          '-fork=1', '-artifact_prefix=/fake/', '-max_total_time=2650',
+          '-print_final_stats=1', '/fake/inputs-disk/temp-1337/new',
+          '/fake/corpus_dir'
+      ], [
+          '/fake/build_dir/fake_fuzzer',
+          '-rss_limit_mb=2048',
+          '-timeout=25',
+          '-merge=1',
+          '/fake/inputs-disk/temp-1337/merge-corpus',
+          '/fake/inputs-disk/temp-1337/new',
+          '/fake/corpus_dir',
+      ]])
+
+      # Check new testcases added.
+      self.assertEqual(
+          sorted(os.listdir('/fake/corpus_dir')),
+          sorted(mock_popen.testcases_written))
+
+      for corpus_file in os.listdir('/fake/corpus_dir'):
+        with open(os.path.join('/fake/corpus_dir', corpus_file)) as f:
+          self.assertEqual(f.read(), corpus_file)
+
+      # Check stats.
+      stats_data = fuzzer_stats.TestcaseRun.read_from_disk(
+          '/fake/testcase_basic')
+      self.assertDictEqual(
+          stats_data.data, {
+              u'actual_duration':
+                  0,
+              u'average_exec_per_sec':
+                  97,
+              u'bad_instrumentation':
+                  0,
+              'build_revision':
+                  1337,
+              u'command': [
+                  u'/fake/build_dir/fake_fuzzer',
+                  u'-max_len=80',
+                  u'-rss_limit_mb=2048',
+                  u'-timeout=25',
+                  u'-collect_data_flow=/fake/dfsan_build/fake_fuzzer',
+                  u'-fork=1',
+                  u'-artifact_prefix=/fake/',
+                  u'-max_total_time=2650',
+                  u'-print_final_stats=1',
+                  u'/fake/inputs-disk/temp-1337/new',
+                  u'/fake/corpus_dir',
+              ],
+              u'corpus_crash_count':
+                  0,
+              u'crash_count':
+                  0,
+              u'corpus_size':
+                  11,
+              u'dict_used':
+                  1,
+              u'edge_coverage':
+                  1769,
+              u'edges_total':
+                  398408,
+              u'feature_coverage':
+                  4958,
+              u'initial_edge_coverage':
+                  1769,
+              u'initial_feature_coverage':
+                  4958,
+              u'expected_duration':
+                  2650,
+              'fuzzer':
+                  u'libfuzzer_fake_fuzzer',
+              u'fuzzing_time_percent':
+                  0.0,
+              'job':
+                  u'job_name',
+              'kind':
+                  u'TestcaseRun',
+              u'leak_count':
+                  0,
+              u'log_lines_from_engine':
+                  65,
+              u'log_lines_ignored':
+                  8,
+              u'log_lines_unwanted':
+                  0,
+              u'manual_dict_size':
+                  0,
+              u'max_len':
+                  80,
+              u'merge_edge_coverage':
+                  1769,
+              u'new_edges':
+                  0,
+              u'new_features':
+                  0,
+              u'new_units_added':
+                  11,
+              u'new_units_generated':
+                  55,
+              u'number_of_executed_units':
+                  258724,
+              u'oom_count':
+                  0,
+              u'peak_rss_mb':
+                  103,
+              u'recommended_dict_size':
+                  0,
+              u'slow_unit_count':
+                  0,
+              u'slow_units_count':
+                  0,
+              u'slowest_unit_time_sec':
+                  0,
+              u'startup_crash_count':
+                  0,
+              u'strategy_dataflow_tracing':
+                  1,
+              u'strategy_corpus_mutations_radamsa':
+                  0,
+              u'strategy_corpus_mutations_ml_rnn':
+                  0,
+              u'strategy_corpus_subset':
+                  0,
+              u'strategy_fork':
+                  1,
+              u'strategy_mutator_plugin':
+                  0,
+              u'strategy_random_max_len':
+                  0,
+              u'strategy_recommended_dict':
+                  0,
+              u'strategy_selection_method':
+                  'default',
+              u'strategy_value_profile':
+                  0,
+              u'timeout_count':
+                  0,
+              u'timeout_limit':
+                  25,
+              'timestamp':
+                  1337.0
+          })
+
+      # Output printed.
+      self.assertIn(self.no_crash_output, mock_stdout.getvalue())
+      expected_command = (
+          'Command: /fake/build_dir/fake_fuzzer '
+          '-max_len=80 -rss_limit_mb=2048 -timeout=25 '
+          '-collect_data_flow=/fake/dfsan_build/fake_fuzzer -fork=1 '
+          '-artifact_prefix=/fake/ -max_total_time=2650 -print_final_stats=1 '
+          '/fake/inputs-disk/temp-1337/new /fake/corpus_dir')
+      self.assertIn(expected_command, mock_stdout.getvalue())
+      self.assertIn('Bot: test-bot', mock_stdout.getvalue())
+      self.assertIn('Time ran:', mock_stdout.getvalue())
+
+  @mock.patch('bot.fuzzers.libFuzzer.launcher.add_recommended_dictionary',
+              lambda x, y, z: False)
+  @mock.patch('multiprocessing.cpu_count', return_value=1)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
+  @mock.patch('system.minijail.tempfile.NamedTemporaryFile')
+  def test_fuzz_with_dataflow_tracing_minijail(self, mock_tempfile, *_):
+    """Tests fuzzing with dataflow tracing inside minijail."""
+    self._dataflow_tracing_test_setup()
+
+    os.environ['USE_MINIJAIL'] = 'True'
+
+    mock_tempfile.return_value.__enter__.return_value.name = '/tmppath'
+    mock_tempfile.return_value.name = '/tmpfile'
+
+    new_units_added = 11
+    with mock.patch(
+        'subprocess.Popen',
+        create_mock_popen(self.no_crash_output,
+                          '/fake/inputs-disk/temp-1337/new', '/fake/corpus_dir',
+                          new_units_added)) as mock_popen:
+      launcher.main([
+          'launcher.py',
+          '/fake/testcase_basic',
+          'fake_fuzzer',
+          '-max_len=80',
+      ])
+
+      self.assertEqual(mock_popen.commands, [[
+          'sudo',
+          '-S',
+          'mknod',
+          '-m',
+          '666',
+          '/fake/inputs-disk/temp-1337/CHROOT/dev/null',
+          'c',
+          '1',
+          '3',
+      ], [
+          'sudo', '-S', 'mknod', '-m', '666',
+          '/fake/inputs-disk/temp-1337/CHROOT/dev/random', 'c', '1', '8'
+      ], [
+          'sudo',
+          '-S',
+          'mknod',
+          '-m',
+          '666',
+          '/fake/inputs-disk/temp-1337/CHROOT/dev/urandom',
+          'c',
+          '1',
+          '9',
+      ], [
+          '/fake_root/resources/platform/{}/minijail0'.format(
+              environment.platform().lower()),
+          '-f',
+          '/tmpfile',
+          '-U',
+          '-m',
+          '0 1000 1',
+          '-T',
+          'static',
+          '-c',
+          '0',
+          '-n',
+          '-v',
+          '-p',
+          '-l',
+          '-I',
+          '-k',
+          'proc,/proc,proc,1',
+          '-P',
+          '/fake/inputs-disk/temp-1337/CHROOT',
+          '-b',
+          '/fake/inputs-disk/temp-1337/TEMP,/tmp,1',
+          '-b',
+          '/lib,/lib,0',
+          '-b',
+          '/lib64,/lib64,0',
+          '-b',
+          '/usr/lib,/usr/lib,0',
+          '-b',
+          '/fake/build_dir,/fake/build_dir,0',
+          '-b',
+          '/fake/dfsan_build,/fake/dfsan_build,0',
+          '-b',
+          '/fake/build_dir,/out,0',
+          '-b',
+          '/fake/inputs-disk/temp-1337/new,/new,1',
+          '-b',
+          '/fake/corpus_dir,/corpus_dir,1',
+          '/fake/build_dir/fake_fuzzer',
+          '-max_len=80',
+          '-rss_limit_mb=2048',
+          '-timeout=25',
+          '-collect_data_flow=/fake/dfsan_build/fake_fuzzer',
+          '-fork=1',
+          '-artifact_prefix=/',
+          '-max_total_time=2650',
+          '-print_final_stats=1',
+          '/new',
+          '/corpus_dir',
+      ], [
+          '/fake_root/resources/platform/{}/minijail0'.format(
+              environment.platform().lower()),
+          '-f',
+          '/tmpfile',
+          '-U',
+          '-m',
+          '0 1000 1',
+          '-T',
+          'static',
+          '-c',
+          '0',
+          '-n',
+          '-v',
+          '-p',
+          '-l',
+          '-I',
+          '-k',
+          'proc,/proc,proc,1',
+          '-P',
+          '/fake/inputs-disk/temp-1337/CHROOT',
+          '-b',
+          '/fake/inputs-disk/temp-1337/TEMP,/tmp,1',
+          '-b',
+          '/lib,/lib,0',
+          '-b',
+          '/lib64,/lib64,0',
+          '-b',
+          '/usr/lib,/usr/lib,0',
+          '-b',
+          '/fake/build_dir,/fake/build_dir,0',
+          '-b',
+          '/fake/dfsan_build,/fake/dfsan_build,0',
+          '-b',
+          '/fake/build_dir,/out,0',
+          '-b',
+          '/fake/inputs-disk/temp-1337/new,/new,1',
+          '-b',
+          '/fake/corpus_dir,/corpus_dir,1',
+          '-b',
+          '/fake/inputs-disk/temp-1337/merge-corpus,/merge-corpus,1',
+          '/fake/build_dir/fake_fuzzer',
+          '-rss_limit_mb=2048',
+          '-timeout=25',
+          '-merge=1',
+          '/merge-corpus',
+          '/new',
+          '/corpus_dir',
+      ]])
+
+  @mock.patch('bot.fuzzers.libFuzzer.launcher.add_recommended_dictionary',
+              lambda x, y, z: False)
+  @mock.patch('multiprocessing.cpu_count', return_value=2)
+  @mock.patch('sys.stdout', new_callable=test_utils.MockStdout)
+  def test_fuzz_with_fork_mode(self, mock_stdout, *_):
+    """Tests fuzzing with fork mode."""
+    self.mock.generate_weighted_strategy_pool.return_value = set_strategy_pool(
+        [strategy.FORK_STRATEGY])
+
+    self.fs.CreateDirectory('/fake/corpus_dir')
+    self.fs.CreateFile('/fake/testcase_basic')
+
+    os.environ['FUZZ_CORPUS_DIR'] = '/fake/corpus_dir'
+
+    new_units_added = 11
+    with mock.patch(
+        'subprocess.Popen',
+        create_mock_popen(self.no_crash_output,
+                          '/fake/inputs-disk/temp-1337/new', '/fake/corpus_dir',
+                          new_units_added)) as mock_popen:
+      launcher.main([
+          'launcher.py',
+          '/fake/testcase_basic',
+          'fake_fuzzer',
+          '-max_len=80',
+      ])
+
+      self.assertEqual(mock_popen.commands, [[
+          '/fake/build_dir/fake_fuzzer', '-max_len=80', '-rss_limit_mb=2048',
+          '-timeout=25', '-fork=2', '-artifact_prefix=/fake/',
+          '-max_total_time=2650', '-print_final_stats=1',
+          '/fake/inputs-disk/temp-1337/new', '/fake/corpus_dir'
+      ], [
+          '/fake/build_dir/fake_fuzzer',
+          '-rss_limit_mb=2048',
+          '-timeout=25',
+          '-merge=1',
+          '/fake/inputs-disk/temp-1337/merge-corpus',
+          '/fake/inputs-disk/temp-1337/new',
+          '/fake/corpus_dir',
+      ]])
+
+      # Check new testcases added.
+      self.assertEqual(
+          sorted(os.listdir('/fake/corpus_dir')),
+          sorted(mock_popen.testcases_written))
+
+      for corpus_file in os.listdir('/fake/corpus_dir'):
+        with open(os.path.join('/fake/corpus_dir', corpus_file)) as f:
+          self.assertEqual(f.read(), corpus_file)
+
+      # Check stats.
+      stats_data = fuzzer_stats.TestcaseRun.read_from_disk(
+          '/fake/testcase_basic')
+      self.assertDictEqual(
+          stats_data.data, {
+              u'actual_duration':
+                  0,
+              u'average_exec_per_sec':
+                  97,
+              u'bad_instrumentation':
+                  0,
+              'build_revision':
+                  1337,
+              u'command': [
+                  u'/fake/build_dir/fake_fuzzer', u'-max_len=80',
+                  u'-rss_limit_mb=2048', u'-timeout=25', u'-fork=2',
+                  u'-artifact_prefix=/fake/', u'-max_total_time=2650',
+                  u'-print_final_stats=1', u'/fake/inputs-disk/temp-1337/new',
+                  u'/fake/corpus_dir'
+              ],
+              u'corpus_crash_count':
+                  0,
+              u'crash_count':
+                  0,
+              u'corpus_size':
+                  11,
+              u'dict_used':
+                  1,
+              u'edge_coverage':
+                  1769,
+              u'edges_total':
+                  398408,
+              u'feature_coverage':
+                  4958,
+              u'initial_edge_coverage':
+                  1769,
+              u'initial_feature_coverage':
+                  4958,
+              u'expected_duration':
+                  2650,
+              'fuzzer':
+                  u'libfuzzer_fake_fuzzer',
+              u'fuzzing_time_percent':
+                  0.0,
+              'job':
+                  u'job_name',
+              'kind':
+                  u'TestcaseRun',
+              u'leak_count':
+                  0,
+              u'log_lines_from_engine':
+                  65,
+              u'log_lines_ignored':
+                  8,
+              u'log_lines_unwanted':
+                  0,
+              u'manual_dict_size':
+                  0,
+              u'max_len':
+                  80,
+              u'merge_edge_coverage':
+                  1769,
+              u'new_edges':
+                  0,
+              u'new_features':
+                  0,
+              u'new_units_added':
+                  11,
+              u'new_units_generated':
+                  55,
+              u'number_of_executed_units':
+                  258724,
+              u'oom_count':
+                  0,
+              u'peak_rss_mb':
+                  103,
+              u'recommended_dict_size':
+                  0,
+              u'slow_unit_count':
+                  0,
+              u'slow_units_count':
+                  0,
+              u'slowest_unit_time_sec':
+                  0,
+              u'startup_crash_count':
+                  0,
+              u'strategy_corpus_mutations_radamsa':
+                  0,
+              u'strategy_corpus_mutations_ml_rnn':
+                  0,
+              u'strategy_corpus_subset':
+                  0,
+              u'strategy_dataflow_tracing':
+                  0,
+              u'strategy_fork':
+                  2,
+              u'strategy_mutator_plugin':
+                  0,
+              u'strategy_random_max_len':
+                  0,
+              u'strategy_recommended_dict':
+                  0,
+              u'strategy_selection_method':
+                  'default',
+              u'strategy_value_profile':
+                  0,
+              u'timeout_count':
+                  0,
+              u'timeout_limit':
+                  25,
+              'timestamp':
+                  1337.0
+          })
+
+      # Output printed.
+      self.assertIn(self.no_crash_output, mock_stdout.getvalue())
+      expected_command = (
+          'Command: /fake/build_dir/fake_fuzzer '
+          '-max_len=80 -rss_limit_mb=2048 -timeout=25 -fork=2 '
+          '-artifact_prefix=/fake/ -max_total_time=2650 -print_final_stats=1 '
+          '/fake/inputs-disk/temp-1337/new /fake/corpus_dir')
+      self.assertIn(expected_command, mock_stdout.getvalue())
+      self.assertIn('Bot: test-bot', mock_stdout.getvalue())
+      self.assertIn('Time ran:', mock_stdout.getvalue())
 
 
 class RecommendedDictionaryTest(fake_fs_unittest.TestCase):
@@ -1750,6 +2486,78 @@ class RecommendedDictionaryTest(fake_fs_unittest.TestCase):
     self.assertIn(
         '/fake/fuzzers/inputs-disk/temp-1337/recommended_dictionary.dict',
         self.mock.download_recommended_dictionary_from_gcs.call_args[0])
+
+
+class IsSha1HashTest(unittest.TestCase):
+  """Tests for is_sha1_hash."""
+
+  def test_non_hashes(self):
+    """Tests that False is returned for non hashes."""
+    self.assertFalse(launcher.is_sha1_hash(''))
+    self.assertFalse(launcher.is_sha1_hash('z' * 40))
+    self.assertFalse(launcher.is_sha1_hash('a' * 50))
+    fake_hash = str('z' + ARBITRARY_SHA1_HASH[1:])
+    self.assertFalse(launcher.is_sha1_hash(fake_hash))
+
+  def test_hash(self):
+    """Tests that False is returned for a real hash."""
+    self.assertTrue(launcher.is_sha1_hash(ARBITRARY_SHA1_HASH))
+
+
+class MoveMergeableUnitsTest(fake_fs_unittest.TestCase):
+  """Tests for move_mergeable_units."""
+  CORPUS_DIRECTORY = '/corpus'
+  MERGE_DIRECTORY = '/corpus-merge'
+
+  def setUp(self):
+    test_utils.set_up_pyfakefs(self)
+
+  def move_mergeable_units(self):
+    """Helper function for move_mergeable_units."""
+    launcher.move_mergeable_units(self.MERGE_DIRECTORY, self.CORPUS_DIRECTORY)
+
+  def test_duplicate_not_moved(self):
+    """Tests that a duplicated file is not moved into the corpus directory."""
+    self.fs.CreateFile(os.path.join(self.CORPUS_DIRECTORY, ARBITRARY_SHA1_HASH))
+    merge_corpus_file = os.path.join(self.MERGE_DIRECTORY, ARBITRARY_SHA1_HASH)
+    self.fs.CreateFile(merge_corpus_file)
+    self.move_mergeable_units()
+    # File will be deleted from merge directory if it isn't a duplicate.
+    self.assertTrue(os.path.exists(merge_corpus_file))
+
+  def test_new_file_moved(self):
+    """Tests that a new file is moved into the corpus directory."""
+    # Make a file that looks like a sha1 hash but is different from
+    # ARBITRARY_SHA1_HASH.
+    filename = ARBITRARY_SHA1_HASH.replace('d', 'a')
+    self.fs.CreateFile(os.path.join(self.CORPUS_DIRECTORY, filename))
+    # Create an arbitrary file with a hash name that is different from this
+    # filename.
+    merge_corpus_file = os.path.join(self.MERGE_DIRECTORY, ARBITRARY_SHA1_HASH)
+    self.fs.CreateFile(merge_corpus_file)
+    self.move_mergeable_units()
+    # File will be deleted from merge directory if it isn't a duplicate.
+    self.assertFalse(os.path.exists(merge_corpus_file))
+    self.assertTrue(
+        os.path.exists(os.path.join(self.CORPUS_DIRECTORY, filename)))
+
+
+class SelectGeneratorTest(unittest.TestCase):
+  """Tests for _select_generator."""
+  FUZZER_PATH = '/fake/fuzzer_path'
+
+  def setUp(self):
+    self.pool = strategy_selection.generate_default_strategy_pool()
+    test_helpers.patch(self, [
+        'bot.fuzzers.engine_common.is_lpm_fuzz_target',
+        'bot.fuzzers.libFuzzer.strategy_selection.StrategyPool.do_strategy'
+    ])
+    self.mock.do_strategy.return_value = True
+    self.mock.is_lpm_fuzz_target.return_value = True
+
+  def test_lpm_fuzz_target(self):
+    self.assertEqual(launcher.Generator.NONE,
+                     launcher._select_generator(self.pool, self.FUZZER_PATH))  # pylint: disable=protected-access
 
 
 if __name__ == '__main__':

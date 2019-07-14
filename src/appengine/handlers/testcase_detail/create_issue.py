@@ -14,9 +14,9 @@
 """Handler for creating issue."""
 from handlers import base_handler
 from handlers.testcase_detail import show
-from issue_management import issue_filer
 from libs import handler
 from libs import helpers
+from libs.issue_management import issue_filer
 
 
 class Handler(base_handler.Handler):
@@ -25,7 +25,7 @@ class Handler(base_handler.Handler):
   @staticmethod
   def create_issue(testcase, severity, cc_me):
     """Create an issue."""
-    itm = helpers.get_issue_tracker_manager(testcase)
+    issue_tracker = helpers.get_issue_tracker_for_testcase(testcase)
     user_email = helpers.get_user_email()
 
     if severity is not None:
@@ -33,12 +33,12 @@ class Handler(base_handler.Handler):
           severity, int, 'Invalid value for security severity (%s).' % severity)
 
     additional_ccs = []
-    if cc_me == 'true':
+    if cc_me:
       additional_ccs.append(user_email)
 
     issue_id = issue_filer.file_issue(
         testcase,
-        itm,
+        issue_tracker,
         security_severity=severity,
         user_email=user_email,
         additional_ccs=additional_ccs)

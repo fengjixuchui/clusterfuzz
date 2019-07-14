@@ -13,13 +13,13 @@
 # limitations under the License.
 """Handler used for loading bigquery data."""
 
+from builtins import range
 import datetime
+import httplib2
 import random
 import time
 
-from google.appengine.api import app_identity
 from googleapiclient.errors import HttpError
-import httplib2
 
 from base import utils
 from datastore import data_types
@@ -27,6 +27,7 @@ from google_cloud_utils import big_query
 from handlers import base_handler
 from libs import handler
 from metrics import fuzzer_stats
+from metrics import fuzzer_stats_schema
 from metrics import logs
 
 STATS_KINDS = [fuzzer_stats.JobRun, fuzzer_stats.TestcaseRun]
@@ -44,7 +45,7 @@ class Handler(base_handler.Handler):
 
   def _execute_insert_request(self, request):
     """Executes a table/dataset insert request, retrying on transport errors."""
-    for i in xrange(NUM_RETRIES + 1):
+    for i in range(NUM_RETRIES + 1):
       try:
         request.execute()
         return True
@@ -65,7 +66,7 @@ class Handler(base_handler.Handler):
 
   def _create_dataset_if_needed(self, bigquery, dataset_id):
     """Create a new dataset if necessary."""
-    project_id = app_identity.get_application_id()
+    project_id = utils.get_application_id()
     dataset_body = {
         'datasetReference': {
             'datasetId': dataset_id,
@@ -79,7 +80,7 @@ class Handler(base_handler.Handler):
 
   def _create_table_if_needed(self, bigquery, dataset_id, table_id):
     """Create a new table if needed."""
-    project_id = app_identity.get_application_id()
+    project_id = utils.get_application_id()
     table_body = {
         'tableReference': {
             'datasetId': dataset_id,
@@ -95,30 +96,9 @@ class Handler(base_handler.Handler):
         projectId=project_id, datasetId=dataset_id, body=table_body)
     return self._execute_insert_request(table_insert)
 
-  def _update_schema_if_needed(self, bigquery, dataset_id, table_id, schema):
-    """Update the table's schema if needed."""
-    if not schema:
-      return
-
-    project_id = app_identity.get_application_id()
-    table = bigquery.tables().get(
-        datasetId=dataset_id, tableId=table_id, projectId=project_id).execute()
-
-    if 'schema' in table and table['schema'] == schema:
-      return
-
-    body = {
-        'schema': schema,
-    }
-
-    logs.log('Updating schema for %s:%s' % (dataset_id, table_id))
-    bigquery.tables().patch(
-        datasetId=dataset_id, tableId=table_id, projectId=project_id,
-        body=body).execute()
-
   def _load_data(self, bigquery, fuzzer):
     """Load yesterday's stats into BigQuery."""
-    project_id = app_identity.get_application_id()
+    project_id = utils.get_application_id()
 
     yesterday = (self._utc_now().date() - datetime.timedelta(days=1))
     date_string = yesterday.strftime('%Y%m%d')
@@ -134,24 +114,29 @@ class Handler(base_handler.Handler):
       if not self._create_table_if_needed(bigquery, dataset_id, table_id):
         continue
 
-      self._update_schema_if_needed(bigquery, dataset_id, table_id, kind.SCHEMA)
+      if kind == fuzzer_stats.TestcaseRun:
+        schema = fuzzer_stats_schema.get(fuzzer)
+      else:
+        schema = kind.SCHEMA
 
       gcs_path = fuzzer_stats.get_gcs_stats_path(kind_name, fuzzer, timestamp)
+      load = {
+          'destinationTable': {
+              'projectId': project_id,
+              'tableId': table_id + '$' + date_string,
+              'datasetId': dataset_id,
+          },
+          'schemaUpdateOptions': ['ALLOW_FIELD_ADDITION',],
+          'sourceFormat': 'NEWLINE_DELIMITED_JSON',
+          'sourceUris': ['gs:/' + gcs_path + '*.json'],
+          'writeDisposition': 'WRITE_TRUNCATE',
+      }
+      if schema is not None:
+        load['schema'] = schema
+
       job_body = {
           'configuration': {
-              'load': {
-                  'autodetect': kind.SCHEMA is None,
-                  'destinationTable': {
-                      'projectId': project_id,
-                      'tableId': table_id + '$' + date_string,
-                      'datasetId': dataset_id,
-                  },
-                  'schemaUpdateOptions': ['ALLOW_FIELD_ADDITION',],
-                  'sourceFormat': 'NEWLINE_DELIMITED_JSON',
-                  'sourceUris': ['gs:/' + gcs_path + '*.json'],
-                  'writeDisposition': 'WRITE_TRUNCATE',
-                  'ignoreUnknownValues': True,
-              },
+              'load': load,
           },
       }
 
@@ -163,7 +148,7 @@ class Handler(base_handler.Handler):
       # running, but having a BigQuery jobId in the log would make our life
       # simpler if we ever have to manually check the status of the query.
       # See https://cloud.google.com/bigquery/docs/reference/rest/v2/jobs/query.
-      logs.log("Response from BigQuery.", response=response)
+      logs.log('Response from BigQuery: %s' % response)
 
   @handler.check_cron()
   def get(self):

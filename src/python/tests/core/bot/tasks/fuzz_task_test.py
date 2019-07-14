@@ -13,6 +13,8 @@
 # limitations under the License.
 """fuzz_task tests."""
 # pylint: disable=protected-access
+from builtins import object
+from builtins import range
 import datetime
 import mock
 import os
@@ -28,7 +30,7 @@ from chrome import crash_uploader
 from crash_analysis.stack_parsing import stack_analyzer
 from datastore import data_types
 from datastore import ndb
-from fuzzing import tests
+from fuzzing import testcase_manager
 from google_cloud_utils import big_query
 from metrics import monitor
 from metrics import monitoring_metrics
@@ -78,7 +80,7 @@ class TrackFuzzerRunResultTest(unittest.TestCase):
     self.assertEqual(3.1, testcase_count_ratio.sum)
     self.assertEqual(5, testcase_count_ratio.count)
 
-    expected_buckets = [0 for _ in xrange(22)]
+    expected_buckets = [0 for _ in range(22)]
     expected_buckets[1] = 1
     expected_buckets[3] = 1
     expected_buckets[11] = 2
@@ -175,31 +177,6 @@ class TrackFuzzTimeTest(unittest.TestCase):
       time_module.advance(5)
       tracker.timeout = timeout
 
-    job_type_time = monitoring_metrics.JOB_FUZZ_TIME.get({
-        'job': 'job',
-        'timeout': timeout
-    })
-    self.assertEqual(5, job_type_time.sum)
-    self.assertEqual(1, job_type_time.count)
-
-    expected_buckets = [0 for _ in xrange(102)]
-    expected_buckets[14] = 1
-    self.assertListEqual(expected_buckets, job_type_time.buckets)
-
-    job_type_total_time = monitoring_metrics.JOB_TOTAL_FUZZ_TIME.get({
-        'job': 'job',
-        'timeout': timeout
-    })
-    self.assertEqual(5, job_type_total_time)
-
-    fuzzer_time = monitoring_metrics.FUZZER_FUZZ_TIME.get({
-        'fuzzer': 'fuzzer',
-        'timeout': timeout
-    })
-    self.assertEqual(5, fuzzer_time.sum)
-    self.assertEqual(1, fuzzer_time.count)
-    self.assertListEqual(expected_buckets, fuzzer_time.buckets)
-
     fuzzer_total_time = monitoring_metrics.FUZZER_TOTAL_FUZZ_TIME.get({
         'fuzzer': 'fuzzer',
         'timeout': timeout
@@ -285,7 +262,7 @@ class GetFullArgsTest(unittest.TestCase):
 
   def setUp(self):
     helpers.patch(self, [
-        'fuzzing.tests.get_additional_command_line_flags',
+        'fuzzing.testcase_manager.get_additional_command_line_flags',
         'system.environment.get_value'
     ])
 
@@ -306,7 +283,7 @@ class CrashInitTest(fake_filesystem_unittest.TestCase):
         'chrome.crash_uploader.FileMetadataInfo',
         'bot.tasks.setup.archive_testcase_and_dependencies_in_gcs',
         'crash_analysis.stack_parsing.stack_analyzer.get_crash_data',
-        'fuzzing.tests.get_command_line_for_application',
+        'fuzzing.testcase_manager.get_command_line_for_application',
         'base.utils.get_crash_stacktrace_output',
         'crash_analysis.crash_analyzer.ignore_stacktrace',
         'crash_analysis.crash_analyzer.is_security_issue',
@@ -334,8 +311,8 @@ class CrashInitTest(fake_filesystem_unittest.TestCase):
   def test_error(self):
     """Test failing to reading stacktrace file."""
     crash = fuzz_task.Crash(
-        tests.Crash('dir/path-http-name', 123, 11, ['res'], 'ges',
-                    '/no_stack_file'))
+        testcase_manager.Crash('dir/path-http-name', 123, 11, ['res'], 'ges',
+                               '/no_stack_file'))
 
     self.assertEqual('dir/path-http-name', crash.file_path)
     self.assertEqual(123, crash.crash_time)
@@ -359,8 +336,8 @@ class CrashInitTest(fake_filesystem_unittest.TestCase):
     self.mock.ignore_stacktrace.return_value = should_be_ignored
 
     crash = fuzz_task.Crash(
-        tests.Crash('dir/path-http-name', 123, 11, ['res'], 'ges',
-                    '/stack_file_path'))
+        testcase_manager.Crash('dir/path-http-name', 123, 11, ['res'], 'ges',
+                               '/stack_file_path'))
 
     self.assertEqual('dir/path-http-name', crash.file_path)
     self.assertEqual(123, crash.crash_time)
@@ -396,7 +373,7 @@ class CrashInitTest(fake_filesystem_unittest.TestCase):
     self.assertEqual('type,state,%s' % security_flag, crash.key)
 
     self.assertEqual(should_be_ignored, crash.should_be_ignored)
-    self.mock.ignore_stacktrace.assert_called_once_with('state', 'trace')
+    self.mock.ignore_stacktrace.assert_called_once_with('orig_trace')
 
     self.assertFalse(hasattr(crash, 'fuzzed_key'))
     return crash
@@ -585,7 +562,7 @@ class FindMainCrashTest(unittest.TestCase):
 
   def setUp(self):
     helpers.patch(self, [
-        'fuzzing.tests.test_for_reproducibility',
+        'fuzzing.testcase_manager.test_for_reproducibility',
     ])
     self.crashes = [
         self._make_crash('g1'),
@@ -674,8 +651,8 @@ class ProcessCrashesTest(fake_filesystem_unittest.TestCase):
         'bot.tasks.setup.archive_testcase_and_dependencies_in_gcs',
         'crash_analysis.stack_parsing.stack_analyzer.get_crash_data',
         'build_management.revisions.get_real_revision',
-        'fuzzing.tests.get_command_line_for_application',
-        'fuzzing.tests.test_for_reproducibility',
+        'fuzzing.testcase_manager.get_command_line_for_application',
+        'fuzzing.testcase_manager.test_for_reproducibility',
         'base.utils.get_crash_stacktrace_output',
         'crash_analysis.crash_analyzer.ignore_stacktrace',
         'crash_analysis.crash_analyzer.is_security_issue',
@@ -715,8 +692,8 @@ class ProcessCrashesTest(fake_filesystem_unittest.TestCase):
       f.write('unsym')
 
     crash = fuzz_task.Crash(
-        tests.Crash('dir/path-http-name', 123, 11, ['res'], ['ges'],
-                    '/stack_file_path'))
+        testcase_manager.Crash('dir/path-http-name', 123, 11, ['res'], ['ges'],
+                               '/stack_file_path'))
     return crash
 
   def test_existing_unreproducible_testcase(self):

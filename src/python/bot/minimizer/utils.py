@@ -12,13 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Minimizer helper functions."""
+from __future__ import absolute_import
+from __future__ import print_function
 
+from builtins import range
 import os
 import shlex
 import subprocess
 
-import errors
-import html_tokenizer
+from . import errors
+from . import html_tokenizer
 
 # TODO(mbarbella): Improve configuration of the test function.
 attempts = 1
@@ -68,8 +71,8 @@ def get_size_string(size):
     return '%d KB' % (size >> 10)
   elif size < 1 << 30:
     return '%d MB' % (size >> 20)
-  else:
-    return '%d GB' % (size >> 30)
+
+  return '%d GB' % (size >> 30)
 
 
 def has_marker(stacktrace, marker_list):
@@ -96,7 +99,7 @@ def set_test_attempts(new_attempts):
 
 def test(test_path):
   """Wrapper function to verify that a test does not fail for multiple runs."""
-  for _ in xrange(attempts):
+  for _ in range(attempts):
     if not single_test_run(test_path):
       return False
   return True
@@ -110,20 +113,20 @@ def single_test_run(test_path):
   args = test_command + [test_path]
   try:
     console_output = subprocess.check_output(args, stderr=subprocess.STDOUT)
-  except subprocess.CalledProcessError, error:
+  except subprocess.CalledProcessError as error:
     console_output = error.output
 
   # If we meet one of these conditions, assume we crashed.
   if ((has_marker(console_output, STACKTRACE_TOOL_MARKERS) and
        has_marker(console_output, STACKTRACE_END_MARKERS)) or
       has_marker(console_output, CHECK_FAILURE_MARKERS)):
-    print 'Crashed, current test size %s.' % (
-        get_size_string(os.path.getsize(test_path)))
+    print('Crashed, current test size %s.' % (get_size_string(
+        os.path.getsize(test_path))))
     return False
 
   # No crash, test passed.
-  print 'Not crashed, current test size %s.' % (
-      get_size_string(os.path.getsize(test_path)))
+  print('Not crashed, current test size %s.' % (get_size_string(
+      os.path.getsize(test_path))))
   return True
 
 
